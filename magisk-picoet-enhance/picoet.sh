@@ -2,21 +2,21 @@
 # PicoET-Enhance: runtime switch for the eye-tracking enhancement.
 #
 #   picoet.sh status
-#   picoet.sh off|left|right|dual [--force]
-#   picoet.sh gate on|off         [--force]
+#   picoet.sh off|dual|toggle    [--force]
 #   picoet.sh ensure              # (internal) inject into the running service if needed
 #
 # The enhancement lives only in the eye-tracking service's memory: bin/picoet-inject
 # ptrace-attaches to pxreyetrackingservice and dlopens lib/libpicoet_hook.so, which installs
-# our hooks (per-eye gate; dual or left/right gaze). No system file is written, no mount is
+# our hooks (per-eye gate and dual gaze). No system file is written, no mount is
 # made, no persistent property is set and ro.pxr.externalfunc is never touched. A switch
 # restarts the service and drops every eye/face tracking client; that is refused while
 # clients are connected unless --force is given.
 #
-#   /data/local/tmp/picoet-mode : off|left|right|dual   (default dual; off = no injection)
-#   /data/local/tmp/picoet-gate : on|off                (default on; only used when active)
+#   /data/local/tmp/picoet-mode : off|dual (default dual; off = no injection)
+#   /data/local/tmp/picoet-gate : off for normal mode, on for dual
 
-MODDIR=${0%/*}
+# Magisk may invoke ./action.sh; the injector requires an absolute payload path.
+MODDIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 1
 BIN=$MODDIR/bin/picoet-inject
 LIB=$MODDIR/lib/libpicoet_hook.so
 MODE_FILE=/data/local/tmp/picoet-mode
@@ -45,7 +45,7 @@ log() { mkdir -p "$STATE_DIR"; echo "$*"; echo "$(date '+%Y-%m-%d %H:%M:%S') $*"
 die() { log "ERROR: $*"; exit 1; }
 sha() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
 # Install/boot initializes dual/on; unexpected runtime mode reads still fail closed.
-saved_mode() { case "$(cat "$MODE_FILE" 2>/dev/null)" in off|left|right|dual) cat "$MODE_FILE" ;; *) echo off ;; esac; }
+saved_mode() { case "$(cat "$MODE_FILE" 2>/dev/null)" in off|dual) cat "$MODE_FILE" ;; *) echo off ;; esac; }
 saved_gate() { case "$(cat "$GATE_FILE" 2>/dev/null)" in on|off) cat "$GATE_FILE" ;; *) echo on ;; esac; }
 clients() { dumpsys "$SERVICE" 2>/dev/null | grep -E 'There is [1-9][0-9]* clients'; }
 service_pid() {
@@ -126,7 +126,7 @@ block_injection() {
 }
 
 # Shared by all watchdog invocations: at most one automatic recovery until the
-# next boot or explicit user mode/gate command. Interrupted injections cannot
+# next boot or explicit user mode command. Interrupted injections cannot
 # form a restart loop by resetting a per-command retry counter.
 recover_service() {
     failed_token=$1
@@ -242,10 +242,14 @@ restart_and_inject() {
 [ "$(id -u)" = 0 ] || die "must run as root"
 
 MODE=$1
+case "$MODE" in
+    status|ensure|off|dual|toggle) ;;
+    *) echo "usage: $0 status | off|dual|toggle [--force] | ensure"; exit 2 ;;
+esac
 if [ "$MODE" != status ]; then
     if [ "${PICOET_CONTROL_LOCKED:-}" != 1 ]; then
         [ -x "$BIN" ] || die "injector/command lock helper missing: $BIN"
-        exec "$BIN" --run-locked "$STATE_DIR/control.lock" "$0" "$@"
+        exec "$BIN" --run-locked "$STATE_DIR/control.lock" "$MODDIR/picoet.sh" "$@"
     fi
     # Covers every failure/early exit, including failed restart/artifact checks.
     trap 'publish' 0
@@ -264,7 +268,7 @@ case "$MODE" in
     ensure)
         inject_now
         exit $? ;;
-    off|left|right|dual)
+    off|dual|toggle)
         FORCE=0
         for a in "$@"; do
             [ "$a" = --force ] && FORCE=1
@@ -272,29 +276,24 @@ case "$MODE" in
         if [ "$FORCE" = 0 ] && [ -n "$(clients)" ]; then
             die "tracking clients connected, restart would drop them; rerun with --force: $(clients | tr '\n' ' ')"
         fi
+        if [ "$MODE" = toggle ]; then
+            # Decide under the control lock from actual readiness. A failed
+            # dual request must retry enabling, not masquerade as enhanced.
+            runtime_snapshot
+            if [ "$PHASE" = ready ] && [ "$APPLIED_MODE" = dual ] && [ "$APPLIED_GATE" = on ]; then
+                MODE=off
+            else
+                MODE=dual
+            fi
+        fi
+        GATE=off
+        [ "$MODE" = dual ] && GATE=on
+        log "switching to mode=$MODE gate=$GATE (eye/face tracking restarts)"
         echo "$MODE" > "$MODE_FILE" || die "cannot write $MODE_FILE"
-        [ -f "$GATE_FILE" ] || echo on > "$GATE_FILE"
+        echo "$GATE" > "$GATE_FILE" || die "cannot write $GATE_FILE"
         rm -f "$BLOCKED" "$RECOVERY_USED" || die "cannot reset recovery budget"
         restart_and_inject || die "mode application failed; see status/inject.log"
         publish
         log "mode=$MODE gate=$(saved_gate) service pid ${old:-none} -> ${new:-none} phase=$PHASE applied_mode=$APPLIED_MODE applied_gate=$APPLIED_GATE"
         exit 0 ;;
-    gate)
-        case "$2" in on|off) ;; *) echo "usage: $0 status | off|left|right|dual [--force] | gate on|off [--force] | ensure"; exit 2 ;; esac
-        FORCE=0
-        for a in "$@"; do
-            [ "$a" = --force ] && FORCE=1
-        done
-        if [ "$FORCE" = 0 ] && [ -n "$(clients)" ]; then
-            die "tracking clients connected, restart would drop them; rerun with --force: $(clients | tr '\n' ' ')"
-        fi
-        echo "$2" > "$GATE_FILE" || die "cannot write $GATE_FILE"
-        rm -f "$BLOCKED" "$RECOVERY_USED" || die "cannot reset recovery budget"
-        restart_and_inject || die "gate application failed; see status/inject.log"
-        publish
-        log "gate=$2 mode=$(saved_mode) service pid ${old:-none} -> ${new:-none} phase=$PHASE applied_mode=$APPLIED_MODE applied_gate=$APPLIED_GATE"
-        exit 0 ;;
-    *)
-        echo "usage: $0 status | off|left|right|dual [--force] | gate on|off [--force] | ensure"
-        exit 2 ;;
 esac

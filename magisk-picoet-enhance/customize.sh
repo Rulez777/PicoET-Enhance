@@ -25,22 +25,19 @@ set_perm "$MODPATH/hashes.sh" 0 0 0644
 # post-fs-data.sh clears it at boot and service.sh republishes the replacement.
 
 # Fresh installs enable both single-eye models and the per-eye/pupil gate.
-# Keep valid saved settings on upgrade, including an explicit off or gate off.
+# Preserve normal mode; migrate legacy enhanced settings to dual/on.
 case "$(cat /data/local/tmp/picoet-mode 2>/dev/null)" in
-    off|left|right|dual) ;;
-    *) echo dual > /data/local/tmp/picoet-mode ;;
-esac
-case "$(cat /data/local/tmp/picoet-gate 2>/dev/null)" in
-    on|off) ;;
-    *) echo on > /data/local/tmp/picoet-gate ;;
+    off) echo off > /data/local/tmp/picoet-gate || abort "! Cannot save normal mode" ;;
+    *)
+        echo dual > /data/local/tmp/picoet-mode || abort "! Cannot save enhanced mode"
+        echo on > /data/local/tmp/picoet-gate || abort "! Cannot save enhanced gate" ;;
 esac
 
 ui_print "- PicoET-Enhance (runtime ptrace injection; no PICO bytes, no system writes)"
-ui_print "- Fresh-install default: dual + gate on; saved settings are preserved on upgrade."
+ui_print "- Fresh-install default: dual/on; upgrades keep off as off/off, otherwise use dual/on."
 ui_print "- Saved state: mode=$(cat /data/local/tmp/picoet-mode) gate=$(cat /data/local/tmp/picoet-gate)"
 ui_print "- ro.pxr.externalfunc is never touched."
 ui_print "- Switch (root, restarts eye/face tracking):"
-ui_print "    sh /data/adb/modules/picoet-enhance/picoet.sh off|left|right|dual"
-ui_print "    sh /data/adb/modules/picoet-enhance/picoet.sh gate on|off"
-ui_print "  or the Action button in the Magisk app (off -> left -> right -> dual -> off)"
+ui_print "    sh /data/adb/modules/picoet-enhance/picoet.sh dual|off"
+ui_print "  or the Action button in the Magisk app (normal off/off <-> enhanced dual/on)"
 ui_print "- Reboot to apply at boot; verify: picoet.sh status"

@@ -1,6 +1,6 @@
 id=picoet-enhance
 name=PicoET-Enhance
-version=2.0.4
-versionCode=14
+version=2.1.0
+versionCode=15
 author=PicoFacialBridge
-description=Runtime eye-tracking enhancement by ptrace injection: opens the service-local per-eye gate and enables per-eye (dual) or left/right gaze. Ships no PICO bytes, writes no system file and no persistent property; ro.pxr.externalfunc is never touched. Switch live with picoet.sh: off | left | right | dual | gate on|off.
+description=Runtime eye-tracking enhancement by ptrace injection: opens the service-local per-eye gate and enables genuine per-eye gaze. Ships no PICO bytes, writes no system file and no persistent property; ro.pxr.externalfunc is never touched. Action toggles enhanced (dual/on) and normal (off/off). Commands: picoet.sh dual | off | toggle | status.

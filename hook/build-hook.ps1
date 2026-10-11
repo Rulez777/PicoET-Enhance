@@ -42,7 +42,8 @@ $toolchain = Join-Path $Ndk 'build\cmake\android.toolchain.cmake'
 $readelf = Join-Path $Ndk 'toolchains\llvm\prebuilt\windows-x86_64\bin\llvm-readelf.exe'
 $nm = Join-Path $Ndk 'toolchains\llvm\prebuilt\windows-x86_64\bin\llvm-nm.exe'
 $objdump = Join-Path $Ndk 'toolchains\llvm\prebuilt\windows-x86_64\bin\llvm-objdump.exe'
-foreach ($t in @($cmake, $ninja, $toolchain, $readelf, $nm, $objdump)) {
+$strip = Join-Path $Ndk 'toolchains\llvm\prebuilt\windows-x86_64\bin\llvm-strip.exe'
+foreach ($t in @($cmake, $ninja, $toolchain, $readelf, $nm, $objdump, $strip)) {
     if (-not (Test-Path -LiteralPath $t)) { throw "missing tool: $t" }
 }
 
@@ -60,6 +61,10 @@ if ($LASTEXITCODE -ne 0) { throw "cmake build failed" }
 $payload = Join-Path $BuildDir 'libpicoet_hook.so'
 $injector = Join-Path $BuildDir 'picoet-inject'
 $ctl = Join-Path $BuildDir 'picoet-target'
+# Debug sections contain build-machine paths. Keep ordinary symbols for the
+# structural checks and diagnostics, but remove debug-only data before packaging.
+& $strip --strip-debug $payload $injector $ctl
+if ($LASTEXITCODE -ne 0) { throw 'failed to strip build-time debug information' }
 Get-Item $injector, $payload, $ctl | Format-Table Name, Length -AutoSize | Out-String | Write-Host
 
 # --- build-time shape assertions (not tests; fail the build on wrong output) ---
@@ -104,9 +109,9 @@ function Get-NmAddr([string]$name) {
 $leafStart = Get-NmAddr 'picoet_leaf_start'
 $leafEnd = Get-NmAddr 'picoet_leaf_end'
 $leafRet = Get-NmAddr 'picoet_leaf_ret_pc'
-$leafG = Get-NmAddr 'picoet_leaf_g_slot'
+$leafG = Get-NmAddr 'picoet_leaf_apply_slot'
 $leafLen = $leafEnd - $leafStart
-if ($leafLen -le 0 -or $leafLen -gt 256) { throw "leaf size $leafLen B out of range (1..256)" }
+if ($leafLen -le 0 -or $leafLen -gt 512) { throw "leaf size $leafLen B out of range (1..512)" }
 $retOff = $leafRet - $leafStart
 $gOff = $leafG - $leafStart
 if ($retOff -lt 0 -or $retOff + 4 -gt $leafLen) { throw "leaf return slot at $retOff out of range" }

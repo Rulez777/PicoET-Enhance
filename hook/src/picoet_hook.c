@@ -25,6 +25,7 @@
 #include <link.h>
 #include <pthread.h>
 #include <stddef.h>
+#include <math.h>
 #include <sys/mman.h>
 #include "shadowhook.h"
 
@@ -69,10 +70,9 @@ __attribute__((visibility("default"))) unsigned long long picoet_eye_mode = 0; /
 __attribute__((visibility("default"))) unsigned long long picoet_dual_installed = 0;
 __attribute__((visibility("default"))) unsigned long long picoet_dual_leaf_installed = 0;
 
-// P4 dual state. Its layout is an ABI with src/picoet_leaf.S (hard-coded
-// offsets there): +0 valid, +8 stamp, +0x10 S_L, +0x18 S_R, +0x20 F_raw,
-// +0x30 n_dispatch, +0x34 n_ok, +0x38 n_fix. One inference thread at a time is
-// assumed (same as cave-dual.S); `valid` is published with release/acquire.
+// Diagnostic ABI: retain the old prefix offsets for local inspection tools.
+// The old sample fields stay zero; frame data is now thread-local, not shared
+// with the leaf. n_ok counts both-eye successes; n_fix counts eye writes.
 struct picoet_dual_state {
     uint32_t valid;
     uint32_t pad0;
@@ -85,9 +85,22 @@ struct picoet_dual_state {
     uint32_t n_ok;
     uint32_t n_fix;
     uint32_t pad2;
+    uint32_t n_left;
+    uint32_t n_right;
+    uint32_t n_invalid_left;
+    uint32_t n_invalid_right;
+    uint32_t n_stamp_miss;
 };
 
 __attribute__((visibility("default"))) struct picoet_dual_state picoet_g;
+
+struct dual_frame {
+    uint64_t stamp;
+    float left[2];
+    float right[2];
+    unsigned valid; /* bit 0 left, bit 1 right */
+};
+static _Thread_local struct dual_frame g_dual_frame;
 
 _Static_assert(offsetof(struct picoet_dual_state, valid) == 0x00, "dual layout");
 _Static_assert(offsetof(struct picoet_dual_state, stamp) == 0x08, "dual layout");
@@ -101,7 +114,7 @@ _Static_assert(offsetof(struct picoet_dual_state, n_fix) == 0x38, "dual layout")
 // Hook B leaf template (src/picoet_leaf.S); copied to the plugin tail page.
 extern const unsigned char picoet_leaf_start[] __attribute__((visibility("hidden")));
 extern const unsigned char picoet_leaf_end[] __attribute__((visibility("hidden")));
-extern const unsigned char picoet_leaf_g_slot[] __attribute__((visibility("hidden")));
+extern const unsigned char picoet_leaf_apply_slot[] __attribute__((visibility("hidden")));
 extern const unsigned char picoet_leaf_ret_pc[] __attribute__((visibility("hidden")));
 
 struct eye_vec3 {
@@ -428,7 +441,7 @@ static int install_hooka_dryrun(void *base)
 //
 // Hook A (plugin 0x49d0c, the fusion inference; sole caller 0x5cbd0): replaced
 // by infer_proxy via shadowhook_hook_func_addr. The proxy runs the left and
-// right single-eye inferences into picoet_g, then the original fused inference
+// right single-eye inferences into thread-local state, then the original inference
 // with the original arguments, whose result is returned unchanged. Single-eye
 // calls go through the saved orig trampoline, never through the hook.
 //
@@ -438,21 +451,21 @@ static int install_hooka_dryrun(void *base)
 // [[fp[0]]+0x10] for the frame timestamp (same as cave-dual.S).
 //
 // Hook B (plugin 0x5c6cc, ldr w10,[sp,#0x24] in the 0x5c2d0 merge point):
-// replaced by a plain b to the leaf copied into the plugin zero tail page at
-// base+0x494c58. The leaf adds (single-eye - fused) to each per-eye vector of
-// the same timestamp, then runs the displaced ldr and branches back to
-// base+0x5c6d0. Registers used (x11-x14, w12, s16-s19) are dead at the join.
+// replaced by a plain b to the trampoline in the plugin zero tail page.
+// It preserves registers and calls apply_dual with the original stack frame.
+// Only per-eye directions/validity are changed; combined output stays stock.
 
 static int vec_point(const struct eye_vec3 *v, float out[2])
 {
     if (!v->begin || !v->end)
         return 0;
-    if ((uintptr_t)v->end - (uintptr_t)v->begin < 8)
+    if ((uintptr_t)v->end < (uintptr_t)v->begin ||
+        (uintptr_t)v->end - (uintptr_t)v->begin < 8)
         return 0;
     float x, y;
     memcpy(&x, v->begin, 4);
     memcpy(&y, (const char *)v->begin + 4, 4);
-    if (x != x || y != y) /* NaN */
+    if (!isfinite(x) || !isfinite(y))
         return 0;
     if (x == 0.0f && y == 0.0f) /* calibration not ready */
         return 0;
@@ -482,10 +495,12 @@ static struct eye_vec3 infer_proxy(void *a0, void *a1, void *a2, void *a3, void 
     uint64_t caller_fp = fp[0];
     uint64_t stamp = *(uint64_t *)(uintptr_t)(*(uint64_t *)(uintptr_t)caller_fp + 0x10);
 
-    picoet_g.valid = 0;
+    struct dual_frame *frame = &g_dual_frame;
+    frame->valid = 0;
+    frame->stamp = stamp;
     uint32_t n = __atomic_add_fetch(&picoet_g.n_dispatch, 1, __ATOMIC_RELAXED);
 
-    float sl[2], sr[2], ff[2];
+    float sl[2] = {0}, sr[2] = {0}, ff[2] = {0};
     int ok_l = 0, ok_r = 0, ok_f = 0;
     unsigned char mat[0x60] __attribute__((aligned(16)));
 
@@ -510,25 +525,89 @@ static struct eye_vec3 infer_proxy(void *a0, void *a1, void *a2, void *a3, void 
     struct eye_vec3 fused = g_orig_infer(a0, a1, a2, a3, a4, a5, mode);
     ok_f = vec_point(&fused, ff);
 
-    if (ok_l && ok_r && ok_f) {
-        picoet_g.s_l[0] = sl[0];
-        picoet_g.s_l[1] = sl[1];
-        picoet_g.s_r[0] = sr[0];
-        picoet_g.s_r[1] = sr[1];
-        picoet_g.f_raw[0] = ff[0];
-        picoet_g.f_raw[1] = ff[1];
-        picoet_g.stamp = stamp;
-        __atomic_store_n(&picoet_g.valid, 1, __ATOMIC_RELEASE);
-        uint32_t k = __atomic_add_fetch(&picoet_g.n_ok, 1, __ATOMIC_RELAXED);
-        if (k <= 5 || (k % 1000) == 0)
-            log_fmt("P4 dual: ok #%u (dispatch #%u) L=(%f,%f) R=(%f,%f) F=(%f,%f)",
-                    k, n, (double)sl[0], (double)sl[1], (double)sr[0], (double)sr[1],
-                    (double)ff[0], (double)ff[1]);
-    } else if (n <= 5 || (n % 1000) == 0) {
-        log_fmt("P4 dual: dispatch #%u L=%d R=%d F=%d", n, ok_l, ok_r, ok_f);
+    // With exactly one usable input the original call already ran that eye's
+    // calibrated single-eye branch. Reuse it without an extra engine call.
+    if (a3 && !a4) {
+        ok_l = ok_f;
+        memcpy(sl, ff, sizeof sl);
+    } else if (!a3 && a4) {
+        ok_r = ok_f;
+        memcpy(sr, ff, sizeof sr);
     }
+    if (ok_l) {
+        memcpy(frame->left, sl, sizeof sl);
+        frame->valid |= 1;
+        __atomic_add_fetch(&picoet_g.n_left, 1, __ATOMIC_RELAXED);
+    }
+    if (ok_r) {
+        memcpy(frame->right, sr, sizeof sr);
+        frame->valid |= 2;
+        __atomic_add_fetch(&picoet_g.n_right, 1, __ATOMIC_RELAXED);
+    }
+    if (ok_l && ok_r)
+        __atomic_add_fetch(&picoet_g.n_ok, 1, __ATOMIC_RELAXED);
+    if (n <= 5 || (n % 1000) == 0)
+        log_fmt("P4 independent: #%u mask=%u F=%d L=(%f,%f) R=(%f,%f)",
+                n, frame->valid, ok_f, (double)sl[0], (double)sl[1],
+                (double)sr[0], (double)sr[1]);
 
     return fused;
+}
+
+// Called by the register-preserving Hook B trampoline on the inference thread.
+// The guarded stock assembly puts eye origins in metres and uses a 1.2 m
+// reference plane: offset_x = -origin_x / 1.2. Reading the origin avoids any
+// dependence on fused values (including non-finite values and filter history).
+static void apply_dual(unsigned char *sp)
+{
+    if (!__atomic_load_n(&picoet_dual_installed, __ATOMIC_ACQUIRE))
+        return; /* installing/failed Hook A: preserve stock behaviour */
+
+    struct dual_frame *frame = &g_dual_frame;
+    uint64_t stamp;
+    memcpy(&stamp, sp + 0x28, sizeof stamp);
+    unsigned valid = frame->stamp == stamp ? frame->valid : 0;
+    if (frame->stamp != stamp)
+        __atomic_add_fetch(&picoet_g.n_stamp_miss, 1, __ATOMIC_RELAXED);
+    frame->valid = 0; /* consume at most once, even when both eyes are invalid */
+
+    unsigned applied = 0;
+    for (unsigned eye = 0; eye < 2; ++eye) {
+        size_t base = eye ? 0xc0 : 0x50;
+        const float *single = eye ? frame->right : frame->left;
+        int usable = (valid & (1u << eye)) && sp[base] && sp[base + 0x10];
+        if (usable) {
+            float origin_x, xy[2];
+            memcpy(&origin_x, sp + base + 4, sizeof origin_x);
+            xy[0] = single[0] - origin_x / 1.2f;
+            xy[1] = single[1];
+            usable = isfinite(xy[0]) && isfinite(xy[1]);
+            if (usable) {
+                memcpy(sp + base + 0x14, xy, sizeof xy);
+                applied |= 1u << eye;
+                __atomic_add_fetch(&picoet_g.n_fix, 1, __ATOMIC_RELAXED);
+            }
+        }
+        if (!usable) {
+            sp[base + 0x10] = 0; /* only gaze direction; openness/origin untouched */
+            uint32_t *counter = eye ? &picoet_g.n_invalid_right : &picoet_g.n_invalid_left;
+            __atomic_add_fetch(counter, 1, __ATOMIC_RELAXED);
+        }
+    }
+    // One example of each validity combination per tracking thread. This shows
+    // actual writeback, rather than inferring it from Hook A installation.
+    static _Thread_local unsigned reported;
+    if (!(reported & (1u << applied))) {
+        reported |= 1u << applied;
+        float left[2], right[2], combined[2];
+        memcpy(left, sp + 0x64, sizeof left);
+        memcpy(right, sp + 0xd4, sizeof right);
+        memcpy(combined, sp + 0x20, sizeof combined);
+        log_fmt("P4 apply: stamp=%llu source=%u output=%u L=(%f,%f) R=(%f,%f) C=(%f,%f)",
+                (unsigned long long)stamp, valid, applied,
+                (double)left[0], (double)left[1], (double)right[0], (double)right[1],
+                (double)combined[0], (double)combined[1]);
+    }
 }
 
 static int install_hookb(void *base)
@@ -572,7 +651,7 @@ static int install_hookb(void *base)
     }
 
     size_t leaf_len = (size_t)(picoet_leaf_end - picoet_leaf_start);
-    if (leaf_len == 0 || leaf_len > 256 || tail + leaf_len > tail_end) {
+    if (leaf_len == 0 || leaf_len > 512 || tail + leaf_len > tail_end) {
         append_log("P4: leaf does not fit the plugin tail; skip");
         return -1;
     }
@@ -588,15 +667,15 @@ static int install_hookb(void *base)
         pagesz = 4096;
     unsigned long tail_page = tail & ~((unsigned long)pagesz - 1);
 
-    unsigned char leaf[256];
+    unsigned char leaf[512];
     memcpy(leaf, picoet_leaf_start, leaf_len);
-    size_t g_off = (size_t)(picoet_leaf_g_slot - picoet_leaf_start);
+    size_t g_off = (size_t)(picoet_leaf_apply_slot - picoet_leaf_start);
     size_t ret_off = (size_t)(picoet_leaf_ret_pc - picoet_leaf_start);
     if (g_off + 8 > leaf_len || ret_off + 4 > leaf_len) {
         append_log("P4: leaf template slots out of range; skip");
         return -1;
     }
-    uint64_t g_addr = (uint64_t)(uintptr_t)&picoet_g;
+    uint64_t g_addr = (uint64_t)(uintptr_t)&apply_dual;
     memcpy(leaf + g_off, &g_addr, 8);
 
     unsigned long ret_pc = tail + ret_off;
@@ -700,7 +779,7 @@ static int install_dual(void *base)
                 shadowhook_get_errno());
         return -1;
     }
-    picoet_dual_installed = 1;
+    __atomic_store_n(&picoet_dual_installed, 1, __ATOMIC_RELEASE);
     picoet_plugin_base = (unsigned long long)base;
     log_fmt("P4 dual: Hook A real installed base=0x%llx orig=0x%llx",
             (unsigned long long)base, (unsigned long long)g_orig_infer);

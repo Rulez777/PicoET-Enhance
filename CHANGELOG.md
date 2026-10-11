@@ -2,6 +2,19 @@
 
 English | [简体中文](CHANGELOG_zh.md)
 
+## [2.1.0] - 2026-10-11
+
+### Fixed
+- Make dual output independent per eye and remove the shared fused-filter residual. Failure clears only that eye's gaze-valid bit while the other keeps updating.
+- Store per-frame results in thread-local state and preserve caller registers and floating-point state in Hook B. Combined gaze retains the original processing.
+- Fix enhancement failing to re-enable when Magisk launches scripts with relative paths.
+
+### Changed
+- Use two control modes: enhanced (`dual/on`) and normal (`off/off`). Remove the `left`, `right` and separate `gate` commands.
+- Make the Magisk Action button switch according to actual readiness and retry enabling after failed loading.
+- At upgrade and boot, normalize a saved `off` to `off/off` and other previous settings to `dual/on`.
+- Strip ELF debug information before packaging.
+
 ## [2.0.4] - 2026-10-08
 
 ### Changed

@@ -5,7 +5,7 @@
 # touched. The companion app state (picoet.enhance.mode/gate) is transient and re-published
 # by picoet.sh whenever the injection state changes.
 
-MODDIR=${0%/*}
+MODDIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 1
 STATE_DIR=/data/adb/picoet-enhance
 LOG=/data/local/tmp/picoet-hook.log             # payload-hardcoded path; keep despite the module rename
 MODE_FILE=/data/local/tmp/picoet-mode
@@ -21,14 +21,12 @@ rm -f "$STATE_DIR/recovery.used" "$STATE_DIR/injection.blocked" "$STATE_DIR/unsa
 resetprop --delete picoet.enhance.mode 2>/dev/null
 resetprop --delete picoet.enhance.gate 2>/dev/null
 
-# Match the installer defaults without overriding valid user settings.
+# Preserve normal mode; migrate legacy enhanced settings to dual/on.
 case "$(cat "$MODE_FILE" 2>/dev/null)" in
-    off|left|right|dual) ;;
-    *) echo dual > "$MODE_FILE" ;;
-esac
-case "$(cat "$GATE_FILE" 2>/dev/null)" in
-    on|off) ;;
-    *) echo on > "$GATE_FILE" ;;
+    off) echo off > "$GATE_FILE" || exit 1 ;;
+    *)
+        echo dual > "$MODE_FILE" || exit 1
+        echo on > "$GATE_FILE" || exit 1 ;;
 esac
 
 # wait for the service (up to ~30 s), then apply the saved state
