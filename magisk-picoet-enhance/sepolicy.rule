@@ -1,23 +1,25 @@
-# Best-effort SEPolicy rules for an enforcing build. The supported device runs permissive,
-# so these rules have not been exercised yet. The injector runs as root in the magisk
-# domain; the payload runs inside pxreyetrackingservice and reads /data/local/tmp files
-# (shell_data_file). The PICO libraries are system_lib_file; our injected library lives in
-# the module directory (system_file).
+# Magisk policy statements: allow source target class permission (no ':' or ';').
+# Enforcing support still requires device validation. Reinstall the module and reboot
+# after changing this file so Magisk rebuilds and loads its preinit policy bundle.
 
 # ptrace injection: magisk (su / service.sh) -> pxreyetrackingservice
-allow magisk pxreyetrackingservice:process ptrace;
-allow magisk pxreyetrackingservice:process signal;
-allow magisk pxreyetrackingservice:mem read;
-allow magisk pxreyetrackingservice:mem write;
-allow magisk pxreyetrackingservice:fd use;
+allow magisk pxreyetrackingservice process { ptrace signal sigkill }
+# /proc/<pid> metadata; PTRACE_PEEKDATA/POKEDATA use process ptrace, not a mem class.
+allow magisk pxreyetrackingservice dir { search open read getattr }
+allow magisk pxreyetrackingservice file { open read getattr }
+allow magisk pxreyetrackingservice fd use
 
-# payload inside the target: mode/gate files + log in /data/local/tmp
-allow pxreyetrackingservice shell_data_file:dir { search read open getattr write add_name remove_name };
-allow pxreyetrackingservice shell_data_file:file { open read write create append getattr rename unlink };
+# dlopen traverses /data/adb (adb_data_file) before the module tree (system_file).
+allow pxreyetrackingservice adb_data_file dir search
+allow pxreyetrackingservice system_file dir search
+
+# payload: mode/gate files, log and atomic runtime reports in /data/local/tmp
+allow pxreyetrackingservice shell_data_file dir { search read open getattr write add_name remove_name }
+allow pxreyetrackingservice shell_data_file file { open read write create append getattr rename unlink }
 
 # payload: map/execute our own injected library (module dir -> system_file)
-allow pxreyetrackingservice system_file:file { open read execute execute_no_trans map };
+allow pxreyetrackingservice system_file file { open read getattr execute map }
 
 # runtime code patching of the plugin: mprotect RWX / COW-exec (execmod)
-allow pxreyetrackingservice system_lib_file:file execmod;
-allow pxreyetrackingservice self:process execmem;
+allow pxreyetrackingservice system_lib_file file execmod
+allow pxreyetrackingservice pxreyetrackingservice process execmem

@@ -8,10 +8,12 @@ The installer checks the device's eye-tracking library hashes before installing.
 Install the ZIP in Magisk and reboot. Fresh installs enable enhanced mode (`dual/on`).
 Selecting normal mode keeps enhancement disabled across subsequent reboots.
 
-Dual updates each eye independently. Tracking loss in one eye leaves the other
-updating, while combined gaze retains the stock processing. Use PicoFacialBridge
-to send the data to UnifiedPicoModule 0.2.0 or later on the PC, where gaze smoothing
-is configured.
+Enhanced mode opens the service-local pupil gate and decouples the expression model:
+each eye's EyeLook, Blink, Wide and brow values are computed and filtered on their own,
+and the right inner brow plus the per-eye quality states are exported as the `EPI1`
+extension. PicoFacialBridge forwards them as `X` packets; the stock mouth processing and
+combined gaze stay unchanged. Use PicoFacialBridge 0.4.0 or later, and UnifiedPicoModule
+0.3.0 or later on the PC.
 
 ## Mode controls
 

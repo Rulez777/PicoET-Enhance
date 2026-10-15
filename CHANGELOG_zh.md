@@ -2,6 +2,32 @@
 
 [English](CHANGELOG.md) | 简体中文
 
+## [2.2.0] - 2026-10-15
+
+### 新功能
+- 解除面部表情模型的跨眼耦合：EyeLook、Blink、Wide 和眉部逐眼独立计算与滤波，每眼维护自己的质量窗口、参考图、数值历史和 Kalman 滤波器。
+- 打开服务内的逐眼门控（`PXR::EyeUtil::isBusinessDev` 返回真），使眼动服务把真实瞳孔直径数据写入共享内存。
+- 将滤波后的右内眉与逐眼质量状态以 `EPI1` 扩展写入面部前缀，由 PicoFacialBridge 以 `X` 包转发。
+
+### 调整
+- 移除原生 gaze 改动：逐眼单眼模型分发、插件尾部跳板和 left/right 模式补丁。融合视线完全回归原厂处理。
+- `picoet.sh` 接受 `on` 作为 `dual` 的同义词。
+
+### 修复
+- 修复 enforcing 环境的 SELinux 策略加载（#3）：使用 Magisk 语句格式，允许穿越 `/data/adb` 与模块目录，将不存在的 `mem` 类替换为 `/proc` 元数据权限，并在 `execmem` 规则中使用明确的服务类型而非 `self`。
+- Magisk ZIP 内附项目许可与第三方声明，补齐 ShadowHook 使用的 xDL、linux-syscall-support 和 BSD 头文件条款。
+
+### 设计理由
+- 原厂模型在输出前混合两眼，一侧的闭合、质量或历史会改变另一侧结果。独立路径让每眼保留自己的原始推理结果、质量窗口、参考与历史，同时保留原厂嘴部处理和对象生命周期。
+- 复用原厂本眼规则而不是近似：Blink 端点、眼内 inner→outer 眉部联动，以及 `correct`→`predict` 的 Kalman 顺序，在服务内每眼各实例化一份。
+
+### 注意事项
+- 已在 PICO 4 Pro / PICO OS 5.13.7 / SELinux permissive 上验证：录制输入可复现独立输出，与原厂基线在全部非眼槽和嘴有效位上一致。事先录制的眼图在头显上经原生眼部推理回放，经 PicoFacialBridge 0.4.0 与 UnifiedPicoModule 0.3.0 到达官方 VRCFT 5.4.5，`E`、`X` 数值与源输出一致。录制约为 23.7 Hz 并以加速循环回放，验证的是推理吞吐与传输，不是原始 90 Hz 相机序列。
+- 逐眼 `X` 路径需要 PicoFacialBridge 0.4.0 及以上与 UnifiedPicoModule 0.3.0 及以上。单眼质量失效（分类 0）、分时参考重建、嘴部输出的真机对照及长时间实机相机使用仍未覆盖。
+- PICO 4 Enterprise 的 SELinux enforcing 环境仍未实测；策略更新需重装模块并重启。
+- 扩展同时携带两侧内眉，但当前 Avatar 使用的宿主侧眉部参数会对两侧取平均；本眼 inner→outer 写回规则有意保留。
+- 构建现在会在载荷或辅助程序含 GNU Build ID 时失败。
+
 ## [2.1.0] - 2026-10-11
 
 ### 修复

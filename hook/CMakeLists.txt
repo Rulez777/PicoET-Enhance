@@ -1,10 +1,16 @@
 cmake_minimum_required(VERSION 3.22)
-project(picoet_hook C ASM)
+project(picoet_hook C CXX ASM)
+
+# The fixed NDK adds a digest-based Build ID to both link command types.
+foreach(link_flags CMAKE_SHARED_LINKER_FLAGS CMAKE_EXE_LINKER_FLAGS)
+    string(REPLACE "-Wl,--build-id=sha1" "-Wl,--build-id=none"
+        ${link_flags} "${${link_flags}}")
+endforeach()
 
 # ---- ShadowHook 2.0.1 (vendored source, static-in-object form) --------------
 # Vendored upstream source (see third_party/shadowhook-2.0.1/VENDOR.txt). The
 # Local integration patches are documented in VENDOR.txt: no linker monitor
-# and no ELF-gap allocation (the plugin tail belongs to our Hook B leaf).
+# and no ELF-gap allocation (islands come from owned anonymous mappings).
 #
 # Built as an OBJECT library (not an archive) on purpose: ShadowHook's errno
 # module is initialised in its own `__attribute__((constructor))` and our
@@ -31,12 +37,16 @@ target_include_directories(shadowhook_obj PRIVATE
     PUBLIC ${SH_DIR}/include)
 
 # ---- our payload object (placed after ShadowHook for ctor ordering) ---------
-# -fno-omit-frame-pointer: the P4 Hook A proxy reads the caller frame (fp[1]
-# caller return address, [[fp[0]]+0x10] timestamp).
-add_library(picoet_obj OBJECT src/picoet_hook.c src/picoet_leaf.S)
-set_target_properties(picoet_obj PROPERTIES C_STANDARD 11 POSITION_INDEPENDENT_CODE ON)
-target_compile_options(picoet_obj PRIVATE -O2 -fPIC -fvisibility=hidden -Wall -Wextra)
-set_source_files_properties(src/picoet_hook.c PROPERTIES COMPILE_OPTIONS "-fno-omit-frame-pointer")
+# Compiled as C++17: the expression-independence path reuses the verified r4
+# numerical/state code and needs exceptions. -fno-omit-frame-pointer is
+# required because merge_proxy reads its caller via __builtin_return_address;
+# -ffp-contract=off keeps the reconstructed stock arithmetic exact.
+set_source_files_properties(src/picoet_hook.c PROPERTIES LANGUAGE CXX)
+add_library(picoet_obj OBJECT src/picoet_hook.c)
+set_target_properties(picoet_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_options(picoet_obj PRIVATE
+    -std=c++17 -O2 -fPIC -fexceptions -fvisibility=hidden -Wall -Wextra
+    -fno-omit-frame-pointer -ffp-contract=off)
 target_include_directories(picoet_obj PRIVATE ${SH_DIR}/include)
 
 add_library(picoet_hook SHARED
@@ -46,8 +56,10 @@ set_target_properties(picoet_hook PROPERTIES OUTPUT_NAME picoet_hook PREFIX "lib
 target_link_options(picoet_hook PRIVATE
     "-Wl,-soname,libpicoet_hook.so"
     "-Wl,--gc-sections"
-    "-Wl,-z,max-page-size=16384")
-target_link_libraries(picoet_hook PRIVATE log dl)
+    "-Wl,-z,max-page-size=16384"
+    "-static-libstdc++"
+    "-Wl,--exclude-libs,ALL")
+target_link_libraries(picoet_hook PRIVATE log dl m)
 
 # ---- injector + benign control target --------------------------------------
 add_executable(picoet-inject src/picoet-inject.c)

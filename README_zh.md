@@ -2,18 +2,18 @@
 
 [English](README.md) | 简体中文
 
-面向 PICO 4 Pro 的眼动增强 Magisk 模块：让头显的眼动服务输出真实的逐眼视线与瞳孔数据，配合 [PicoFacialBridge](https://github.com/WolalaQAQ/PicoFacialBridge) 和 [UnifiedPicoModule](https://github.com/WolalaQAQ/UnifiedPicoModule) 使用。
+面向 PICO 4 Pro 的眼动增强 Magisk 模块：打开眼动服务的逐眼门控以输出真实瞳孔数据，并解除面部表情模型的跨眼耦合，让左右眼各自计算，配合 [PicoFacialBridge](https://github.com/WolalaQAQ/PicoFacialBridge) 和 [UnifiedPicoModule](https://github.com/WolalaQAQ/UnifiedPicoModule) 使用。
 
-> v2.1.0 · PICO 4 Pro / PICO OS 5.13.7 · [更新日志](CHANGELOG_zh.md)
+> v2.2.0 · PICO 4 Pro / PICO OS 5.13.7 · [更新日志](CHANGELOG_zh.md)
 
 ## 它做什么
 
-PICO 4 Pro 的固件本身就能算出左右眼各自的视线，但默认只对外提供融合后的结果。本模块在运行期对该行为做两处修正：
+PICO 4 Pro 的固件会对左右眼分别追踪，但面部表情模型在输出前把两眼混合：一侧的 Blink、视线方向、Wide 和眉部会受另一侧输入影响。本模块在运行期做两处修正：
 
-- 打开眼动服务内部的逐眼门控，使逐眼视线与真实瞳孔数据被写入共享内存；
-- 让眼动算法同时运行左右眼的单眼模型，得到真正的分眼视线向量（`dual` 模式）。
+- 打开眼动服务内部的逐眼门控，使真实瞳孔直径数据写入共享内存；
+- 解除表情模型的跨眼耦合：EyeLook、Blink、Wide 和眉部通道逐眼独立计算与滤波，每眼维护自己的质量窗口、参考图和历史。滤波后的右内眉与逐眼质量状态通过 `EPI1` 扩展导出，由 PicoFacialBridge 以 `X` 包转发。
 
-dual 模式下，两眼分别输出单眼推理结果。一眼追踪失效时，另一眼继续更新，PC 模块保持失效眼最近的有效值。OpenXR 等应用读取的融合视线沿用原厂推理和滤波。
+嘴部处理与融合视线保持原样。每眼保留原有的本眼规则：Blink 端点、平滑，以及眼内 inner→outer 眉部联动。
 
 增强通过运行期 hook 作用于眼动服务，随服务重启而卸载。
 
@@ -31,7 +31,7 @@ VRCFaceTracking → VRChat OSC
 
 PicoFacialBridge 读取本模块公布的临时模式属性，自动告知 PC 当前处于普通还是增强模式。
 
-建议搭配 UnifiedPicoModule 0.2.0 或更新版本。PC 端默认按模式启用自适应平滑，参数见 [UnifiedPicoModule 配置说明](https://github.com/WolalaQAQ/UnifiedPicoModule/blob/main/docs/configuration_zh.md#视线平滑)。
+逐眼独立表情需要头显端 PicoET-Enhance 2.2.0 及以上、PicoFacialBridge 0.4.0 及以上，以及 PC 端 UnifiedPicoModule 0.3.0 及以上。较旧的 Bridge（0.3 及以上）在普通模式下仍可使用，无需本模块。
 
 ## 环境要求
 
@@ -50,8 +50,8 @@ PicoFacialBridge 读取本模块公布的临时模式属性，自动告知 PC �
 2. 在 Magisk App 中通过“从本地安装”刷入，或使用命令行：
 
    ```sh
-   adb push magisk-picoet-enhance-v2.1.0.zip /data/local/tmp/
-   adb shell su -c 'magisk --install-module /data/local/tmp/magisk-picoet-enhance-v2.1.0.zip'
+   adb push magisk-picoet-enhance-v2.2.0.zip /data/local/tmp/
+   adb shell su -c 'magisk --install-module /data/local/tmp/magisk-picoet-enhance-v2.2.0.zip'
    ```
 
 3. 重启头显。
@@ -72,21 +72,23 @@ sh /data/adb/modules/picoet-enhance/picoet.sh toggle
 | 命令 | 作用 |
 |---|---|
 | `status` | 显示保存的模式、注入状态、服务 PID 与 `ro.pxr.externalfunc` 的当前值 |
-| `dual` | 增强模式：同时设置 `dual/on`，启用真实逐眼视线与瞳孔数据 |
+| `dual` | 增强模式：同时设置 `dual/on`，打开瞳孔门控并启用逐眼独立表情 |
 | `off` | 普通模式：同时设置 `off/off`，重启眼动服务且不注入，回到原版 |
 | `toggle` | 增强已就绪时切到普通模式，否则尝试开启增强 |
 
 切换模式会重启眼动服务并断开眼动、面捕客户端；有客户端连接时，命令行需要加 `--force`。Magisk App 的“操作”按钮直接切换增强与普通模式；增强加载失败后，再按会重试开启。
 
-状态文件为 `/data/local/tmp/picoet-mode` 与 `/data/local/tmp/picoet-gate`，日志为 `/data/local/tmp/picoet-hook.log`。
+`on` 可作为 `dual` 的同义词。状态文件为 `/data/local/tmp/picoet-mode` 与 `/data/local/tmp/picoet-gate`，日志为 `/data/local/tmp/picoet-hook.log`。
 
 ## 关于企业版门控
 
-固件通过 `PXR::EyeUtil::isBusinessDev()` 控制逐眼数据写入。本模块在眼动服务内将该函数的返回值设为真，启用逐眼输出；整机企业模式属性 `ro.pxr.externalfunc` 保持原值。
+固件通过 `PXR::EyeUtil::isBusinessDev()` 控制逐眼输出，包括真实瞳孔直径。本模块在眼动服务内将该函数的返回值设为真；整机企业模式属性 `ro.pxr.externalfunc` 保持原值。
 
 ## 兼容性与验证情况
 
-已在 PICO 4 Pro / PICO OS 5.13.7 / SELinux Permissive 下观察逐眼独立输出，单眼失效时另一眼持续更新；VD 1.34.22.0 的高清区跟随和菜单眼动指针正常。新版控制脚本的两档切换、相对路径启动及 Enforcing 下的规则尚待实机验证。
+逐眼表情路径已在 PICO 4 Pro / PICO OS 5.13.7 上完成验证：录制输入可复现独立输出，与原厂基线在全部非眼槽和嘴有效位上一致。端到端方面，事先录制的眼图在头显上经原生眼部推理回放，经 PicoFacialBridge 0.4.0 与 UnifiedPicoModule 0.3.0 到达官方 VRCFT 5.4.5，收到的 `E`、`X` 数值与源输出一致。录制约为 23.7 Hz 并以加速循环回放，因此验证的是推理吞吐与传输，不是真实 90 Hz 相机序列。
+
+尚未覆盖：单眼质量失效、分时参考重建、嘴部输出的真机对照，以及长时间实机相机使用。嘴部共享处理与融合视线保持原样；当前 Avatar 使用的宿主侧眉部参数仍对两侧取平均，尽管扩展会同时携带两侧数值。
 
 ## 关闭与卸载
 
@@ -116,4 +118,4 @@ pwsh -File build-picoet-enhance.ps1            # 打包成 Magisk zip
 
 ## 许可证
 
-本项目原创代码与脚本采用 [MIT](LICENSE)。`hook/third_party/shadowhook-2.0.1/` 为 ByteDance ShadowHook 2.0.1 的源码副本，采用 MIT 许可。本项目不包含也不分发任何 PICO 二进制，仅在运行期按数字偏移引用设备自身的库。详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+本项目原创代码与脚本采用 [MIT](LICENSE)。内置的 ShadowHook 2.0.1 源码包含 MIT／BSD 许可的依赖，Magisk ZIP 内附相应声明与项目许可。本项目不包含也不分发任何 PICO 二进制，仅在运行期按数字偏移引用设备自身的库。详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

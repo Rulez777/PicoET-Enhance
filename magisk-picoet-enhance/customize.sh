@@ -24,7 +24,7 @@ set_perm "$MODPATH/hashes.sh" 0 0 0644
 # An upgrade is staged until reboot. Keep the running instance's actual state;
 # post-fs-data.sh clears it at boot and service.sh republishes the replacement.
 
-# Fresh installs enable both single-eye models and the per-eye/pupil gate.
+# Fresh installs enable the pupil gate and the per-eye expression path.
 # Preserve normal mode; migrate legacy enhanced settings to dual/on.
 case "$(cat /data/local/tmp/picoet-mode 2>/dev/null)" in
     off) echo off > /data/local/tmp/picoet-gate || abort "! Cannot save normal mode" ;;

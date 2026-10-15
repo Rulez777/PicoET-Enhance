@@ -13,8 +13,8 @@ Local integration patches:
    which does not exist in a static build. This project hooks already-mapped libraries
    by address/name and discovers the plugin itself; it does not use pending hooks.
    cpp/sh_island.c: ELF-gap fallback skipped when PICOET_SHADOWHOOK_NO_ELF_GAP
-   is defined. PicoET places Hook B in the plugin's executable tail without changing
-   its ELF segment sizes. ShadowHook cannot track that reservation, so this build
-   only allocates its islands in owned anonymous mappings; allocation failure must
-   fail the hook instead of overwriting the leaf. This applies to all hooks, not
-   just their initial installation order. Both defines are set in hook/CMakeLists.txt.
+   is defined. This integration, like the verified expression payload builds it
+   matches, allocates ShadowHook islands only in owned anonymous mappings; a
+   failed allocation fails the hook instead of reusing a free ELF gap. This
+   applies to all hooks, not just their initial installation order. Both
+   defines are set in hook/CMakeLists.txt.

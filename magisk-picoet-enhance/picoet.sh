@@ -2,12 +2,12 @@
 # PicoET-Enhance: runtime switch for the eye-tracking enhancement.
 #
 #   picoet.sh status
-#   picoet.sh off|dual|toggle    [--force]
+#   picoet.sh off|dual|toggle    [--force]      (on is accepted as a synonym for dual)
 #   picoet.sh ensure              # (internal) inject into the running service if needed
 #
 # The enhancement lives only in the eye-tracking service's memory: bin/picoet-inject
 # ptrace-attaches to pxreyetrackingservice and dlopens lib/libpicoet_hook.so, which installs
-# our hooks (per-eye gate and dual gaze). No system file is written, no mount is
+# our hooks (per-eye gate and per-eye independent expressions). No system file is written, no mount is
 # made, no persistent property is set and ro.pxr.externalfunc is never touched. A switch
 # restarts the service and drops every eye/face tracking client; that is refused while
 # clients are connected unless --force is given.
@@ -243,9 +243,11 @@ restart_and_inject() {
 
 MODE=$1
 case "$MODE" in
-    status|ensure|off|dual|toggle) ;;
-    *) echo "usage: $0 status | off|dual|toggle [--force] | ensure"; exit 2 ;;
+    status|ensure|off|dual|on|toggle) ;;
+    *) echo "usage: $0 status | off|dual|on|toggle [--force] | ensure"; exit 2 ;;
 esac
+# `on` is the companion-property spelling; normalize it to the saved `dual` mode.
+[ "$MODE" = on ] && MODE=dual
 if [ "$MODE" != status ]; then
     if [ "${PICOET_CONTROL_LOCKED:-}" != 1 ]; then
         [ -x "$BIN" ] || die "injector/command lock helper missing: $BIN"

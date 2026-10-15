@@ -1,19 +1,27 @@
-// libpicoet_hook.so -- P1 gate hook + P2 plugin capture / Hook A dry-run +
-// P3 eye-mode patch (left/right) + P4 dual (per-eye) gaze.
+// libpicoet_hook.so -- runtime payload for the eye-tracking service.
 //
-// Runs inside pxreyetrackingservice, injected at runtime by picoet-inject.
-// Design: HOOK-DUAL-DESIGN-2026-10-02 sections 4.4/5/7. This library contains
-// only our code plus the vendored ShadowHook source; it refers to the PICO
-// libraries by name/offset at runtime and ships no PICO bytes.
+// Two features, both installed only inside pxreyetrackingservice:
+//   P1 gate: PXR::EyeUtil::isBusinessDev() returns 1, so the eye-tracking
+//            service writes real pupil diameter data to shared memory.
+//   Expression independence (r4): the FaceTrackor expression model no longer
+//            mixes the two eyes. EyeLook, Blink, Wide and the brow channels
+//            are computed and filtered per eye, each with its own quality
+//            window, reference image and history, and the filtered right inner
+//            brow plus the per-eye quality states are exported as the EPI1
+//            extension on the facial prefix.
 //
-// Service compatibility/init failure blocks all plugin writes. Installation
-// results are reported per process; a partially installed gate is not dual gaze.
+// Runs inside the service, injected at runtime by picoet-inject. This library
+// contains only our code plus the vendored ShadowHook source; it refers to the
+// PICO libraries by name/offset at runtime and ships no PICO bytes.
+//
+// Installation is all-or-nothing: every compatibility guard, hook and patch is
+// checked, and any failure rolls back what was already installed. The runtime
+// state file reports only what was actually installed.
 //
 // Build: hook/CMakeLists.txt (ShadowHook 2.0.1, OBJECT libs for ctor order).
-// Note: this file is compiled with -fno-omit-frame-pointer because the P4
-// Hook A proxy reads the caller frame ([[x29]+0x10] timestamp, x30 caller id).
+// This file is compiled as C++17; -fno-omit-frame-pointer is required because
+// merge_proxy reads its caller via __builtin_return_address.
 
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,124 +35,70 @@
 #include <stddef.h>
 #include <math.h>
 #include <sys/mman.h>
+#include <atomic>
+#include <cstring>
+#include <deque>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
 #include "shadowhook.h"
 
-// ---- service library (gate) ----
-#define SERVICE_LIB_PATH "/system/lib64/libpxreyetrackingservice.so"
-#define SERVICE_LIB_SONAME "libpxreyetrackingservice.so"
-#define SERVICE_FNV1A64 0xC51A2999AF634D51ULL /* PICO OS 5.13.7 stock */
-#define GATE_SYM "_ZN3PXR7EyeUtil13isBusinessDevEv"
-
-// ---- gaze plugin (Hook A) ----
-#define PLUGIN_SONAME "libpxreyetracking.phoenix.so"
-#define PLUGIN_OFF_INFER 0x49d0cULL /* infer_entry, function entry */
-#define PLUGIN_OFF_HOOKA_CALLER 0x5cbd4ULL /* return address of the only caller */
-#define PLUGIN_OFF_HOOKB 0x5c6ccULL
-#define PLUGIN_REGION_FNV 0xDF826910BC21B004ULL /* [0x5c2d0, 0x5c6d0) */
-
-// ---- eye-mode patch site (P3) ----
-#define EYE_MODE_FILE "/data/local/tmp/picoet-mode" /* off|left|right|dual */
-#define GATE_FILE "/data/local/tmp/picoet-gate" /* on|off; missing = on */
-#define RUNTIME_DIR "/data/local/tmp/picoet-runtime" /* root-owned, prepared by picoet.sh */
-#define PLUGIN_OFF_EYE_MODE 0x5cd68ULL /* ldr w8,[x8,#0x108] */
-#define PLUGIN_EYE_MODE_WIN_OFF 0x5cd50ULL
-#define PLUGIN_EYE_MODE_WIN_LEN 0x30U
-#define PLUGIN_EYE_MODE_FNV 0x79576A0B00A351F2ULL /* [0x5cd50, 0x5cd80) */
-
-// ---- dual (P4): Hook A real logic + Hook B leaf ----
-#define PLUGIN_OFF_MAT_CTOR 0x18dd44ULL /* cv::Mat::Mat() */
-#define PLUGIN_OFF_MAT_DTOR 0x18ed0cULL /* cv::Mat::~Mat() */
-#define PLUGIN_OFF_OP_DELETE 0x34278cULL /* operator delete */
-#define PLUGIN_OFF_HOOKB_RETURN 0x5c6d0ULL /* Hook B jumps back here */
-#define PLUGIN_TAIL_OFF 0x494c58ULL /* LOAD0 zero tail (leaf home) */
-#define PLUGIN_TAIL_END 0x495000ULL
-
+// ---- exported sentinels and counters (read with dlsym) ----------------------
+extern "C" {
 __attribute__((visibility("default"))) unsigned long long picoet_hook_marker = 0;
 __attribute__((visibility("default"))) unsigned long long picoet_gate_calls = 0;
 __attribute__((visibility("default"))) unsigned long long picoet_gate_installed = 0;
 __attribute__((visibility("default"))) unsigned long long picoet_plugin_base = 0;
-__attribute__((visibility("default"))) unsigned long long picoet_hooka_calls = 0;
-__attribute__((visibility("default"))) unsigned long long picoet_hooka_installed = 0;
-__attribute__((visibility("default"))) unsigned long long picoet_eye_mode_patched = 0;
-__attribute__((visibility("default"))) unsigned long long picoet_eye_mode = 0; /* 0 off/none, 1 left, 2 right, 3 dual */
 __attribute__((visibility("default"))) unsigned long long picoet_dual_installed = 0;
-__attribute__((visibility("default"))) unsigned long long picoet_dual_leaf_installed = 0;
+}
 
-// Diagnostic ABI: retain the old prefix offsets for local inspection tools.
-// The old sample fields stay zero; frame data is now thread-local, not shared
-// with the leaf. n_ok counts both-eye successes; n_fix counts eye writes.
-struct picoet_dual_state {
-    uint32_t valid;
-    uint32_t pad0;
-    uint64_t stamp;
-    float s_l[2];
-    float s_r[2];
-    float f_raw[2];
-    uint32_t pad1[2];
-    uint32_t n_dispatch;
-    uint32_t n_ok;
-    uint32_t n_fix;
-    uint32_t pad2;
-    uint32_t n_left;
-    uint32_t n_right;
-    uint32_t n_invalid_left;
-    uint32_t n_invalid_right;
-    uint32_t n_stamp_miss;
-};
+namespace {
 
-__attribute__((visibility("default"))) struct picoet_dual_state picoet_g;
+// ---- constants --------------------------------------------------------------
 
-struct dual_frame {
-    uint64_t stamp;
-    float left[2];
-    float right[2];
-    unsigned valid; /* bit 0 left, bit 1 right */
-};
-static _Thread_local struct dual_frame g_dual_frame;
+// Service library (gate).
+constexpr const char kServiceLibPath[] = "/system/lib64/libpxreyetrackingservice.so";
+constexpr const char kServiceLibSoname[] = "libpxreyetrackingservice.so";
+constexpr uint64_t kServiceFnv1a64 = 0xC51A2999AF634D51ULL; /* PICO OS 5.13.7 stock */
+constexpr const char kGateSym[] = "_ZN3PXR7EyeUtil13isBusinessDevEv";
 
-_Static_assert(offsetof(struct picoet_dual_state, valid) == 0x00, "dual layout");
-_Static_assert(offsetof(struct picoet_dual_state, stamp) == 0x08, "dual layout");
-_Static_assert(offsetof(struct picoet_dual_state, s_l) == 0x10, "dual layout");
-_Static_assert(offsetof(struct picoet_dual_state, s_r) == 0x18, "dual layout");
-_Static_assert(offsetof(struct picoet_dual_state, f_raw) == 0x20, "dual layout");
-_Static_assert(offsetof(struct picoet_dual_state, n_dispatch) == 0x30, "dual layout");
-_Static_assert(offsetof(struct picoet_dual_state, n_ok) == 0x34, "dual layout");
-_Static_assert(offsetof(struct picoet_dual_state, n_fix) == 0x38, "dual layout");
+// Control files and log.
+constexpr const char kEyeModeFile[] = "/data/local/tmp/picoet-mode"; /* off|dual */
+constexpr const char kGateFile[] = "/data/local/tmp/picoet-gate";    /* on|off; missing = on */
+constexpr const char kRuntimeDir[] = "/data/local/tmp/picoet-runtime";
+constexpr const char kHookLog[] = "/data/local/tmp/picoet-hook.log";
 
-// Hook B leaf template (src/picoet_leaf.S); copied to the plugin tail page.
-extern const unsigned char picoet_leaf_start[] __attribute__((visibility("hidden")));
-extern const unsigned char picoet_leaf_end[] __attribute__((visibility("hidden")));
-extern const unsigned char picoet_leaf_apply_slot[] __attribute__((visibility("hidden")));
-extern const unsigned char picoet_leaf_ret_pc[] __attribute__((visibility("hidden")));
+// Gaze plugin and the expression-independent hook sites.
+constexpr const char kPluginSoname[] = "libpxreyetracking.phoenix.so";
+constexpr uint64_t kPluginMinLoadBytes = 0x34279c; /* first PT_LOAD R|X span */
+constexpr size_t kOffInfer = 0x613e0;
+constexpr size_t kOffTrackor = 0x625b4;
+constexpr size_t kOffOwnerInit = 0x60998;
+constexpr size_t kOffNormalExit = 0x62c6c;
+constexpr size_t kOffCatchExit = 0x62f70;
+constexpr size_t kOffMerge = 0x62f90;
+constexpr size_t kOffDestroy = 0x6016c;
+constexpr size_t kOffExport = 0x60754;
+constexpr size_t kOffBlinkCopyPatch = 0x62a8c;
+constexpr size_t kOffSharedRefPatch = 0x62b70;
+constexpr uint32_t kWordMerge = 0xd10503ff;
+constexpr uint32_t kWordExport = 0xd63f02c0;
+constexpr uint32_t kWordBlinkCopy = 0x540000c1;
+constexpr uint32_t kWordSharedRef = 0x2a1c0368;
+constexpr uint32_t kWordDestroy = 0xf81e0ff3;
+constexpr uint32_t kPatchBlinkCopy = 0x14000010;  /* b +0x40: skip good-eye blink copy */
+constexpr uint32_t kPatchSharedRef = 0x14000023;  /* b +0x8c: skip shared reference tail */
+constexpr const char kExpressionVersion[] = "expression-independent-r4-20261014";
 
-struct eye_vec3 {
-    void *begin;
-    void *end;
-    void *cap;
-};
-_Static_assert(sizeof(struct eye_vec3) == 24, "sret ABI");
+unsigned long long g_start_ticks;
+int g_enhanced_mode = 0;
+int g_gate_requested = 1;
 
-typedef struct eye_vec3 (*infer_fn_t)(void *, void *, void *, void *, void *, void *, int);
-typedef void (*void_fn1_t)(void *);
+// ---- logging ----------------------------------------------------------------
 
-static infer_fn_t g_orig_infer = NULL;
-static void_fn1_t g_mat_ctor = NULL;
-static void_fn1_t g_mat_dtor = NULL;
-static void_fn1_t g_op_delete = NULL;
-
-static void *g_phoenix_base = NULL;
-static void *g_hooka_stub = NULL;
-static int g_plugin_guard_ok = 0;
-static int g_eye_mode = 0;
-static int g_gate_requested = 1;
-static unsigned long long g_start_ticks;
-
-static int find_region(unsigned long addr, unsigned long *start, unsigned long *end, int *prot);
-
-static void append_log(const char *msg)
+void append_log(const char *msg)
 {
-    int fd = open("/data/local/tmp/picoet-hook.log",
-                  O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    int fd = open(kHookLog, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
     if (fd < 0)
         return;
     size_t n = strlen(msg);
@@ -155,9 +109,9 @@ static void append_log(const char *msg)
     close(fd);
 }
 
-static void log_fmt(const char *fmt, ...)
+void log_fmt(const char *fmt, ...)
 {
-    char buf[256];
+    char buf[512];
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
@@ -165,7 +119,9 @@ static void log_fmt(const char *fmt, ...)
     append_log(buf);
 }
 
-static unsigned long long process_start_ticks(void)
+// ---- process identity and runtime state -------------------------------------
+
+unsigned long long process_start_ticks(void)
 {
     char buf[2048];
     int fd = open("/proc/self/stat", O_RDONLY | O_CLOEXEC);
@@ -196,16 +152,13 @@ static unsigned long long process_start_ticks(void)
 // One writer: constructor, then (only if needed) the plugin poll thread.
 // Atomic rename prevents readers seeing half a record. PID + /proc starttime
 // prevent a previous service instance, including a reused PID, from advertising.
-static int publish_runtime(const char *phase)
+// mode=dual only when the gate hook and the expression hooks are both installed.
+int publish_runtime(const char *phase)
 {
     char path[128], tmp[128], record[160];
-    const char *mode = "off";
-    if (picoet_dual_installed)
-        mode = "dual";
-    else if (picoet_eye_mode_patched)
-        mode = g_eye_mode == 1 ? "left" : "right";
-    snprintf(path, sizeof(path), RUNTIME_DIR "/%ld.state", (long)getpid());
-    snprintf(tmp, sizeof(tmp), RUNTIME_DIR "/%ld.tmp", (long)getpid());
+    const char *mode = __atomic_load_n(&picoet_dual_installed, __ATOMIC_RELAXED) ? "dual" : "off";
+    snprintf(path, sizeof(path), "%s/%ld.state", kRuntimeDir, (long)getpid());
+    snprintf(tmp, sizeof(tmp), "%s/%ld.tmp", kRuntimeDir, (long)getpid());
     int len = snprintf(record, sizeof(record), "1 %ld %llu %s %s %s\n",
                        (long)getpid(), g_start_ticks, phase, mode,
                        picoet_gate_installed ? "on" : "off");
@@ -230,22 +183,15 @@ static int publish_runtime(const char *phase)
     return -1;
 }
 
-static void report_runtime(const char *phase)
+void report_runtime(const char *phase)
 {
     if (publish_runtime(phase) != 0)
         log_fmt("runtime state: cannot publish %s errno=%d", phase, errno);
 }
 
-static int plugin_range_readable(const unsigned char *base, size_t off, size_t len)
-{
-    unsigned long addr = (unsigned long)base + off, start, end;
-    int prot;
-    return find_region(addr, &start, &end, &prot) == 0 &&
-           (prot & (PROT_READ | PROT_EXEC)) == (PROT_READ | PROT_EXEC) &&
-           len <= end - addr;
-}
+// ---- generic helpers --------------------------------------------------------
 
-static int fnv1a64_file(const char *path, uint64_t *out)
+int fnv1a64_file(const char *path, uint64_t *out)
 {
     int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0)
@@ -272,7 +218,7 @@ static int fnv1a64_file(const char *path, uint64_t *out)
     return 0;
 }
 
-static uint64_t fnv1a64_mem(const unsigned char *p, size_t n)
+uint64_t fnv1a64_mem(const unsigned char *p, size_t n)
 {
     uint64_t h = 14695981039346656037ULL;
     for (size_t i = 0; i < n; i++) {
@@ -282,13 +228,25 @@ static uint64_t fnv1a64_mem(const unsigned char *p, size_t n)
     return h;
 }
 
+template<class T> T load(const void *object, size_t offset)
+{
+    T value;
+    std::memcpy(&value, static_cast<const unsigned char *>(object) + offset, sizeof(value));
+    return value;
+}
+
+template<class T> void store(void *object, size_t offset, T value)
+{
+    std::memcpy(static_cast<unsigned char *>(object) + offset, &value, sizeof(value));
+}
+
 // ---- gate hook (P1) ---------------------------------------------------------
 
 /* The gate layer can be switched off with /data/local/tmp/picoet-gate (on|off).
  * A missing file means on, so ad-hoc injections keep the P1 behaviour. */
-static int read_gate_enabled(void)
+int read_gate_enabled(void)
 {
-    int fd = open(GATE_FILE, O_RDONLY | O_CLOEXEC);
+    int fd = open(kGateFile, O_RDONLY | O_CLOEXEC);
     if (fd < 0)
         return 1;
     char buf[8];
@@ -300,7 +258,7 @@ static int read_gate_enabled(void)
     return strncmp(buf, "off", 3) != 0;
 }
 
-static int my_isBusinessDev(void)
+int my_isBusinessDev(void)
 {
     unsigned long long n = __atomic_add_fetch(&picoet_gate_calls, 1, __ATOMIC_RELAXED);
     if (n <= 3 || (n % 1000) == 0)
@@ -308,16 +266,16 @@ static int my_isBusinessDev(void)
     return 1;
 }
 
-static int install_gate_hook(void)
+int install_gate_hook(void)
 {
     append_log("P1 init: libpicoet_hook.so constructed");
 
     uint64_t h = 0;
-    if (fnv1a64_file(SERVICE_LIB_PATH, &h) != 0) {
+    if (fnv1a64_file(kServiceLibPath, &h) != 0) {
         append_log("P1 guard: cannot read service lib; skip");
         return -1;
     }
-    if (h != SERVICE_FNV1A64) {
+    if (h != kServiceFnv1a64) {
         log_fmt("P1 guard: service lib hash 0x%016llX != known; skip", (unsigned long long)h);
         return -1;
     }
@@ -335,485 +293,967 @@ static int install_gate_hook(void)
     }
 
     void *orig = NULL;
-    void *stub = shadowhook_hook_sym_name(SERVICE_LIB_SONAME, GATE_SYM,
+    void *stub = shadowhook_hook_sym_name(kServiceLibSoname, kGateSym,
                                           (void *)my_isBusinessDev, &orig);
     if (!stub || !orig) {
         log_fmt("P1: gate hook failed errno=%d", shadowhook_get_errno());
         return -1;
     }
-    picoet_gate_installed = 1;
+    __atomic_store_n(&picoet_gate_installed, 1, __ATOMIC_RELEASE);
     append_log("P1 gate hook installed (isBusinessDev -> 1)");
     return 0;
 }
 
-// ---- plugin discovery (P2) --------------------------------------------------
+// ---- plugin discovery -------------------------------------------------------
 
-static int phoenix_cb(struct dl_phdr_info *info, size_t size, void *data)
+int phoenix_cb(struct dl_phdr_info *info, size_t, void *opaque)
 {
-    (void)size;
-    (void)data;
+    void **base = static_cast<void **>(opaque);
     if (!info->dlpi_name || !info->dlpi_name[0])
         return 0;
     const char *bn = strrchr(info->dlpi_name, '/');
     bn = bn ? bn + 1 : info->dlpi_name;
-    if (strcmp(bn, PLUGIN_SONAME) == 0) {
-        g_phoenix_base = (void *)info->dlpi_addr;
-        return 1; /* stop */
+    if (strcmp(bn, kPluginSoname) != 0)
+        return 0;
+    for (ElfW(Half) i = 0; i < info->dlpi_phnum; ++i) {
+        const auto &p = info->dlpi_phdr[i];
+        if (p.p_type == PT_LOAD && p.p_flags == (PF_R | PF_X) && p.p_vaddr == 0 &&
+            p.p_memsz >= kPluginMinLoadBytes)
+            *base = (void *)info->dlpi_addr;
     }
     return 0;
 }
 
-static void *find_phoenix(void)
+void *find_phoenix(void)
 {
-    g_phoenix_base = NULL;
-    dl_iterate_phdr(phoenix_cb, NULL);
-    return g_phoenix_base;
+    void *base = NULL;
+    dl_iterate_phdr(phoenix_cb, &base);
+    return base;
 }
 
-// ---- Hook A dry-run (P2): observe only, never change behavior ---------------
+// ---- expression-independent machinery (verified r4) -------------------------
+//
+// The stock expression model mixes the two eyes before output. The independent
+// path keeps each eye's own raw inference result, quality window, reference
+// image, numerical history and stock Kalman filter, and writes the filtered
+// result back over the 19 standard eye slots. The stock mouth processing, the
+// combined eye validity and the owner lifecycle keep running untouched.
 
-static void hooka_pre(shadowhook_cpu_context_t *ctx, void *data)
+// Native ABI types used by the hooked functions. No PICO bytes are embedded.
+struct expr_vec {
+    void *begin, *end, *capacity;
+};
+struct expr_mat {
+    alignas(8) unsigned char bytes[0x60];
+};
+struct expr_output {
+    float values[54];
+};
+static_assert(sizeof(expr_vec) == 24, "stock AAPCS64 vector return ABI");
+static_assert(sizeof(expr_mat) == 0x60, "stock Mat storage");
+static_assert(sizeof(expr_output) == 0xd8, "stock AAPCS64 POD return ABI");
+
+using infer_fn_t = expr_vec (*)(void *, void *, const expr_vec *);
+using trackor_fn_t = expr_output (*)(void *, const expr_mat *, const expr_mat *, const expr_mat *);
+using init_fn_t = void (*)(void *);
+
+// Stock helper call layout for the native adapter, offsets from plugin base.
+struct StockLayout {
+    static constexpr uintptr_t kalman_construct = 0x159b90;
+    static constexpr uintptr_t kalman_correct = 0x15a528;
+    static constexpr uintptr_t kalman_predict = 0x15a260;
+    static constexpr uintptr_t kalman_bytes = 0x600;
+    static constexpr uintptr_t kalman_transition = 0xc0;
+    static constexpr uintptr_t kalman_measurement = 0x180;
+    static constexpr uintptr_t kalman_process_noise = 0x1e0;
+    static constexpr uintptr_t kalman_measurement_noise = 0x240;
+    static constexpr uintptr_t mat_bytes = 0x60;
+    static constexpr uintptr_t mat_construct = 0x18dd44;
+    static constexpr uintptr_t mat_external = 0x18e710;
+    static constexpr uintptr_t mat_destroy = 0x18ed0c;
+    static constexpr uintptr_t set_identity = 0x1a1678;
+};
+
+template<class T> T entry(uintptr_t base, uintptr_t offset)
 {
-    (void)data;
-    unsigned long long n = __atomic_add_fetch(&picoet_hooka_calls, 1, __ATOMIC_RELAXED);
-    if (n <= 5 || (n % 1000) == 0) {
-        unsigned long long x30 = ctx->regs[30];
-        unsigned long long x3 = ctx->regs[3];
-        unsigned long long x4 = ctx->regs[4];
-        unsigned long long want = (unsigned long long)g_phoenix_base + PLUGIN_OFF_HOOKA_CALLER;
-        log_fmt("P2 HookA #%llu x30=0x%llx x3=%s x4=%s caller_is_0x5cbd4=%s",
-                n, x30, x3 ? "set" : "null", x4 ? "set" : "null",
-                x30 == want ? "yes" : "no");
+    return reinterpret_cast<T>(base + offset);
+}
+
+// ---- numerical reconstruction of the stock eye post-processing --------------
+
+constexpr unsigned kEyeCount = 2;
+constexpr unsigned kChannelsPerEye = 10;
+constexpr unsigned kEyeChannels = 20;
+
+enum EyeChannel : unsigned {
+    BrowDown = 0,
+    BrowInnerUp = 1,
+    BrowOuterUp = 2,
+    Blink = 3,
+    LookDown = 4,
+    LookIn = 5,
+    LookOut = 6,
+    LookUp = 7,
+    Squint = 8,
+    Wide = 9,
+};
+
+float clamp01(float value)
+{
+    // Stock 0x61c88/0x61f74 use comparisons, not fmin/fmax NaN replacement.
+    if (value > 1.0f) value = 1.0f;
+    if (value < 0.0f) value = 0.0f;
+    return value;
+}
+
+float blink_endpoint(float value)
+{
+    // 0x62568..0x62594 compares float converted to DOUBLE constants.
+    // Strict thresholds matter: float(0.04) is below double(0.04), while
+    // float(0.8) is above double(0.8).
+    if (static_cast<double>(value) < 0.04) value = 0.0f;
+    if (static_cast<double>(value) > 0.8) value = 1.0f;
+    return value;
+}
+
+void postprocess_one(const float input[kChannelsPerEye], float output[kChannelsPerEye])
+{
+    const float down = input[BrowDown];
+    const float up = input[BrowInnerUp];
+    float down4 = down * down;
+    float up4 = up * up;
+    down4 = down * down4;
+    up4 = up * up4;
+    down4 = down * down4;
+    up4 = up * up4;
+
+    // 0x6242c adds the fourth powers as float BEFORE converting to double.
+    const double denominator = static_cast<double>(down4 + up4) + 1e-10;
+    const double down_weight = static_cast<double>(down4) / denominator;
+    const double up_weight = static_cast<double>(up4) / denominator;
+    const float processed_down = static_cast<float>(down_weight *
+                                                   static_cast<double>(down + up));
+    // 0x62458 uses the ALREADY transformed down value; not raw down+up again.
+    const float processed_up = static_cast<float>(up_weight *
+                                                 static_cast<double>(up + processed_down));
+    float linked_up = processed_up;
+    if (processed_up < 0.2f) linked_up = input[Wide] * 0.5f + processed_up;
+    float linked_down = processed_down;
+    if (processed_down < 0.8f) linked_down = input[Blink] * 0.5f + processed_down;
+
+    memcpy(output, input, sizeof(float) * kChannelsPerEye);
+    output[BrowDown] = linked_down;
+    // Original overwrites outer with the transformed inner, even on one eye.
+    output[BrowInnerUp] = linked_up;
+    output[BrowOuterUp] = linked_up;
+    output[Blink] = blink_endpoint(input[Blink]);
+}
+
+float adaptive(float previous, float current)
+{
+    const float weight = expf(-9.0f * fabsf(previous - current));
+    const float complement = 1.0f - weight;
+    const float old_part = previous * weight;
+    const float new_part = current * complement;
+    return old_part + new_part;
+}
+
+float motion_weight(const float raw[kChannelsPerEye],
+                    const float earlier[kChannelsPerEye])
+{
+    // 0x62360..0x623c8: replace the mean of two Blink differences by THIS
+    // eye's difference, and apply the stock left-direction grouping per eye.
+    const float blink = fabsf(raw[Blink] - earlier[Blink]);
+    const float down_up = fabsf(raw[LookDown] - earlier[LookDown]) +
+                          fabsf(raw[LookUp] - earlier[LookUp]);
+    const float in_out = fabsf(raw[LookIn] - earlier[LookIn]) +
+                         fabsf(raw[LookOut] - earlier[LookOut]);
+    const float directions = (down_up + in_out) * 0.5f;
+    return fminf(fmaxf(blink + directions, 0.0f), 1.0f);
+}
+
+float composite(float previous, float current, float motion)
+{
+    // Exact stock constants: current 0x35e450=0x3f19999a, previous
+    // 0x360980=0x3ecccccc (NOT rounded C++ literal 0.4f=0x3ecccccd).
+    constexpr float current_weight = 0x1.333334p-1f;
+    constexpr float previous_weight = 0x1.999998p-2f;
+    const float current_part = current * current_weight;
+    const float previous_part = previous * previous_weight;
+    const float intermediate = current_part + previous_part;
+    const float complement = 1.0f - motion;
+    const float scaled = intermediate * complement;
+    const float old_weight = 1.0f - complement * current_weight;
+    const float new_part = scaled * current_weight;
+    const float old_part = previous * old_weight;
+    return new_part + old_part;
+}
+
+struct EyeHistory {
+    uint32_t successful_frames = 0; // Saturates at two: stock needs two prior outputs.
+    float previous[kChannelsPerEye] {};
+    float earlier[kChannelsPerEye] {};
+};
+
+struct FilterState {
+    EyeHistory eye[kEyeCount];
+};
+
+// Each context must own a DIFFERENT stock Kalman object, initialized as stock:
+// DP=2, MP=2, CP=0, CV_32F; transition/measurement identity, Q=R=0.1 identity.
+// The callback calls stock correct(measurement), THEN predict(empty control),
+// and copies the two predicted floats to prediction.
+using BrowPredict = void (*)(void *context, const float measurement[2],
+                             float prediction[2]);
+
+void filter_one(EyeHistory &history, const float raw[kChannelsPerEye],
+                const float postprocessed[kChannelsPerEye],
+                float output[kChannelsPerEye], BrowPredict predict, void *context)
+{
+    float current[kChannelsPerEye];
+    for (unsigned i = 0; i < kChannelsPerEye; ++i) current[i] = clamp01(postprocessed[i]);
+
+    if (history.successful_frames < 2) {
+        memcpy(output, current, sizeof(current));
+    } else {
+        const float motion = motion_weight(raw, history.earlier);
+        for (unsigned i = BrowDown; i <= BrowOuterUp; ++i)
+            output[i] = composite(history.previous[i], current[i], motion);
+        // Blink, all four directions, Squint and Wide are stock k=9 slots.
+        for (unsigned i = Blink; i < kChannelsPerEye; ++i)
+            output[i] = adaptive(history.previous[i], current[i]);
+        const float measurement[2] = {output[BrowInnerUp], output[BrowOuterUp]};
+        float prediction[2];
+        predict(context, measurement, prediction);
+        output[BrowInnerUp] = prediction[0];
+        output[BrowOuterUp] = prediction[1];
+    }
+
+    for (unsigned i = 0; i < kChannelsPerEye; ++i) output[i] = clamp01(output[i]);
+    memcpy(history.earlier, history.previous, sizeof(history.earlier));
+    memcpy(history.previous, output, sizeof(history.previous));
+    if (history.successful_frames < 2) ++history.successful_frames;
+}
+
+void postprocess_eye20(const float input[kEyeChannels], float output[kEyeChannels])
+{
+    float snapshot[kEyeChannels];
+    memcpy(snapshot, input, sizeof(snapshot));
+    for (unsigned eye = 0; eye < kEyeCount; ++eye) {
+        const unsigned offset = eye * kChannelsPerEye;
+        postprocess_one(snapshot + offset, output + offset);
     }
 }
 
-static int plugin_guards_ok(const unsigned char *b)
+void filter_eye20(FilterState &state, const float raw[kEyeChannels],
+                  const float postprocessed[kEyeChannels],
+                  float filtered[kEyeChannels], BrowPredict predict,
+                  void *const contexts[kEyeCount])
 {
-    static const unsigned char exp49[16] = {
-        0xfc, 0x6f, 0xba, 0xa9, 0xfa, 0x67, 0x01, 0xa9,
-        0xf8, 0x5f, 0x02, 0xa9, 0xf6, 0x57, 0x03, 0xa9,
+    float raw_snapshot[kEyeChannels], post_snapshot[kEyeChannels];
+    memcpy(raw_snapshot, raw, sizeof(raw_snapshot));
+    memcpy(post_snapshot, postprocessed, sizeof(post_snapshot));
+    for (unsigned eye = 0; eye < kEyeCount; ++eye) {
+        const unsigned offset = eye * kChannelsPerEye;
+        filter_one(state.eye[eye], raw_snapshot + offset, post_snapshot + offset,
+                   filtered + offset, predict, contexts[eye]);
+    }
+}
+
+float writeback_expression52(const float filtered[kEyeChannels], float expression52[52])
+{
+    // 0x360b90 reorder of mouth33 followed by eye20. eye[11] is omitted.
+    constexpr int slots[kEyeChannels] = {
+        16, 3, 30, 28, 0, 2, 44, 31, 26, 47,
+        4, -1, 36, 38, 12, 11, 45, 35, 41, 46,
     };
-    static const unsigned char exp6cc[4] = {0xea, 0x27, 0x40, 0xb9};
-    static const unsigned char expbd0[4] = {0x4f, 0xb4, 0xff, 0x97};
-
-    if (!plugin_range_readable(b, PLUGIN_OFF_INFER, 16) ||
-        !plugin_range_readable(b, 0x5c2d0, 0x400) ||
-        !plugin_range_readable(b, PLUGIN_OFF_HOOKA_CALLER - 4, 4)) {
-        append_log("P2 guard: plugin anchors outside readable executable mappings; skip");
-        return -1;
+    float snapshot[kEyeChannels];
+    memcpy(snapshot, filtered, sizeof(snapshot));
+    for (unsigned i = 0; i < kEyeChannels; ++i) {
+        if (slots[i] >= 0) expression52[slots[i]] = snapshot[i];
     }
-    if (memcmp(b + PLUGIN_OFF_INFER, exp49, 16) != 0) {
-        append_log("P2 guard: plugin infer_entry prologue mismatch; skip");
-        return -1;
-    }
-    if (memcmp(b + PLUGIN_OFF_HOOKB, exp6cc, 4) != 0 ||
-        memcmp(b + PLUGIN_OFF_HOOKA_CALLER - 4, expbd0, 4) != 0) {
-        append_log("P2 guard: plugin hook anchors mismatch; skip");
-        return -1;
-    }
-    if (fnv1a64_mem(b + 0x5c2d0, 0x400) != PLUGIN_REGION_FNV) {
-        append_log("P2 guard: plugin region hash mismatch; skip");
-        return -1;
-    }
-    g_plugin_guard_ok = 1;
-    return 0;
+    return snapshot[kChannelsPerEye + BrowInnerUp];
 }
 
-static int install_hooka_dryrun(void *base)
-{
-    const unsigned char *b = (const unsigned char *)base;
-    if (plugin_guards_ok(b) != 0)
-        return -1;
+// ---- native adapter for the per-eye Kalman filter ---------------------------
 
-    g_hooka_stub = shadowhook_intercept_func_addr((void *)(b + PLUGIN_OFF_INFER),
-                                                  hooka_pre, NULL, SHADOWHOOK_INTERCEPT_DEFAULT);
-    if (!g_hooka_stub) {
-        log_fmt("P2: Hook A intercept failed errno=%d", shadowhook_get_errno());
-        return -1;
+using ObjectCall = void (*)(void *);
+using KalmanConstruct = void (*)(void *, int, int, int, int);
+using KalmanStep = const void *(*)(void *, const void *);
+using MatExternal = void (*)(void *, int, int, int, void *, size_t);
+struct NativeArray {
+    uint32_t flags, padding;
+    void *object;
+    uint64_t size;
+};
+using SetIdentity = void (*)(const NativeArray *, const double *);
+static_assert(sizeof(NativeArray) == 24, "stock AAPCS64 InputOutputArray layout");
+
+struct NativeMat {
+    uintptr_t base;
+    alignas(8) unsigned char bytes[StockLayout::mat_bytes];
+    explicit NativeMat(uintptr_t plugin_base) : base(plugin_base)
+    {
+        entry<ObjectCall>(base, StockLayout::mat_construct)(bytes);
     }
-    picoet_hooka_installed = 1;
-    picoet_plugin_base = (unsigned long long)base;
-    log_fmt("P2 HookA installed (intercept dry-run) base=0x%llx", (unsigned long long)base);
-    return 0;
+    NativeMat(uintptr_t plugin_base, const float *measurement) : base(plugin_base)
+    {
+        entry<MatExternal>(base, StockLayout::mat_external)(
+            bytes, 2, 1, 5, const_cast<float *>(measurement), sizeof(float));
+    }
+    ~NativeMat() { entry<ObjectCall>(base, StockLayout::mat_destroy)(bytes); }
+    NativeMat(const NativeMat &) = delete;
+    NativeMat &operator=(const NativeMat &) = delete;
+};
+
+class NativeBrowFilter {
+public:
+    explicit NativeBrowFilter(uintptr_t plugin_base);
+    ~NativeBrowFilter();
+    NativeBrowFilter(const NativeBrowFilter &) = delete;
+    NativeBrowFilter &operator=(const NativeBrowFilter &) = delete;
+    static void predict(void *context, const float measurement[2], float prediction[2]);
+
+private:
+    uintptr_t base_;
+    alignas(8) unsigned char kalman_[StockLayout::kalman_bytes];
+    void destroy();
+};
+
+NativeBrowFilter::NativeBrowFilter(uintptr_t plugin_base) : base_(plugin_base)
+{
+    // Stock 0x5ff80..0x5ff94 constructs sixteen 0x60-byte Mats in Kalman.
+    // Its constructor handles failures before completion; after it completes,
+    // our ownership mirrors the stock reverse-order Mat destruction.
+    entry<KalmanConstruct>(base_, StockLayout::kalman_construct)(kalman_, 2, 2, 0, 5);
+    try {
+        const uintptr_t matrices[] = {
+            StockLayout::kalman_transition, StockLayout::kalman_measurement,
+            StockLayout::kalman_process_noise, StockLayout::kalman_measurement_noise,
+        };
+        for (unsigned i = 0; i < 4; ++i) {
+            const NativeArray target = {0x3010000, 0, kalman_ + matrices[i], 0};
+            const double scalar[4] = {i < 2 ? 1.0 : 0.1, 0.0, 0.0, 0.0};
+            entry<SetIdentity>(base_, StockLayout::set_identity)(&target, scalar);
+        }
+    } catch (...) {
+        destroy();
+        throw;
+    }
 }
 
-// ---- P4 dual: Hook A real proxy + Hook B leaf --------------------------------
-//
-// Hook A (plugin 0x49d0c, the fusion inference; sole caller 0x5cbd0): replaced
-// by infer_proxy via shadowhook_hook_func_addr. The proxy runs the left and
-// right single-eye inferences into thread-local state, then the original inference
-// with the original arguments, whose result is returned unchanged. Single-eye
-// calls go through the saved orig trampoline, never through the hook.
-//
-// The proxy relies on the caller frame: at entry x29 is the frame of the
-// function that called 0x49d0c and x30 is its return address, so with
-// -fno-omit-frame-pointer we read fp[1] (x30) to identify the caller and
-// [[fp[0]]+0x10] for the frame timestamp (same as cave-dual.S).
-//
-// Hook B (plugin 0x5c6cc, ldr w10,[sp,#0x24] in the 0x5c2d0 merge point):
-// replaced by a plain b to the trampoline in the plugin zero tail page.
-// It preserves registers and calls apply_dual with the original stack frame.
-// Only per-eye directions/validity are changed; combined output stays stock.
-
-static int vec_point(const struct eye_vec3 *v, float out[2])
+void NativeBrowFilter::destroy()
 {
-    if (!v->begin || !v->end)
-        return 0;
-    if ((uintptr_t)v->end < (uintptr_t)v->begin ||
-        (uintptr_t)v->end - (uintptr_t)v->begin < 8)
-        return 0;
-    float x, y;
-    memcpy(&x, v->begin, 4);
-    memcpy(&y, (const char *)v->begin + 4, 4);
-    if (!isfinite(x) || !isfinite(y))
-        return 0;
-    if (x == 0.0f && y == 0.0f) /* calibration not ready */
-        return 0;
-    out[0] = x;
-    out[1] = y;
-    return 1;
+    for (uintptr_t offset = StockLayout::kalman_bytes; offset != 0;) {
+        offset -= StockLayout::mat_bytes;
+        entry<ObjectCall>(base_, StockLayout::mat_destroy)(kalman_ + offset);
+    }
 }
 
-static struct eye_vec3 infer_proxy(void *a0, void *a1, void *a2, void *a3, void *a4,
-                                   void *a5, int mode)
+NativeBrowFilter::~NativeBrowFilter()
 {
-    if (!g_orig_infer) {
-        struct eye_vec3 empty = {NULL, NULL, NULL};
-        return empty;
-    }
-
-    uint64_t *fp = (uint64_t *)__builtin_frame_address(0);
-    uint64_t lr = fp[1];
-    uint64_t want = (uint64_t)g_phoenix_base + PLUGIN_OFF_HOOKA_CALLER;
-
-    if (!g_phoenix_base || lr != want) {
-        /* not the fusion call site: pass through untouched */
-        return g_orig_infer(a0, a1, a2, a3, a4, a5, mode);
-    }
-
-    /* [[x29]+0x10] with x29 = caller frame at entry (cave-dual.S) */
-    uint64_t caller_fp = fp[0];
-    uint64_t stamp = *(uint64_t *)(uintptr_t)(*(uint64_t *)(uintptr_t)caller_fp + 0x10);
-
-    struct dual_frame *frame = &g_dual_frame;
-    frame->valid = 0;
-    frame->stamp = stamp;
-    uint32_t n = __atomic_add_fetch(&picoet_g.n_dispatch, 1, __ATOMIC_RELAXED);
-
-    float sl[2] = {0}, sr[2] = {0}, ff[2] = {0};
-    int ok_l = 0, ok_r = 0, ok_f = 0;
-    unsigned char mat[0x60] __attribute__((aligned(16)));
-
-    if (a3 && a4) {
-        struct eye_vec3 r;
-
-        g_mat_ctor(mat);
-        r = g_orig_infer(a0, a1, a2, a3, NULL, mat, mode);
-        ok_l = vec_point(&r, sl);
-        if (r.begin)
-            g_op_delete(r.begin);
-        g_mat_dtor(mat);
-
-        g_mat_ctor(mat);
-        r = g_orig_infer(a0, a1, a2, NULL, a4, mat, mode);
-        ok_r = vec_point(&r, sr);
-        if (r.begin)
-            g_op_delete(r.begin);
-        g_mat_dtor(mat);
-    }
-
-    struct eye_vec3 fused = g_orig_infer(a0, a1, a2, a3, a4, a5, mode);
-    ok_f = vec_point(&fused, ff);
-
-    // With exactly one usable input the original call already ran that eye's
-    // calibrated single-eye branch. Reuse it without an extra engine call.
-    if (a3 && !a4) {
-        ok_l = ok_f;
-        memcpy(sl, ff, sizeof sl);
-    } else if (!a3 && a4) {
-        ok_r = ok_f;
-        memcpy(sr, ff, sizeof sr);
-    }
-    if (ok_l) {
-        memcpy(frame->left, sl, sizeof sl);
-        frame->valid |= 1;
-        __atomic_add_fetch(&picoet_g.n_left, 1, __ATOMIC_RELAXED);
-    }
-    if (ok_r) {
-        memcpy(frame->right, sr, sizeof sr);
-        frame->valid |= 2;
-        __atomic_add_fetch(&picoet_g.n_right, 1, __ATOMIC_RELAXED);
-    }
-    if (ok_l && ok_r)
-        __atomic_add_fetch(&picoet_g.n_ok, 1, __ATOMIC_RELAXED);
-    if (n <= 5 || (n % 1000) == 0)
-        log_fmt("P4 independent: #%u mask=%u F=%d L=(%f,%f) R=(%f,%f)",
-                n, frame->valid, ok_f, (double)sl[0], (double)sl[1],
-                (double)sr[0], (double)sr[1]);
-
-    return fused;
+    destroy();
 }
 
-// Called by the register-preserving Hook B trampoline on the inference thread.
-// The guarded stock assembly puts eye origins in metres and uses a 1.2 m
-// reference plane: offset_x = -origin_x / 1.2. Reading the origin avoids any
-// dependence on fused values (including non-finite values and filter history).
-static void apply_dual(unsigned char *sp)
+void NativeBrowFilter::predict(void *context, const float measurement[2], float prediction[2])
 {
-    if (!__atomic_load_n(&picoet_dual_installed, __ATOMIC_ACQUIRE))
-        return; /* installing/failed Hook A: preserve stock behaviour */
+    auto &filter = *static_cast<NativeBrowFilter *>(context);
+    NativeMat input(filter.base_, measurement);
+    NativeMat empty_control(filter.base_);
+    entry<KalmanStep>(filter.base_, StockLayout::kalman_correct)(filter.kalman_, input.bytes);
+    const void *result = entry<KalmanStep>(filter.base_, StockLayout::kalman_predict)(
+        filter.kalman_, empty_control.bytes);
+    const float *data;
+    memcpy(&data, static_cast<const unsigned char *>(result) + 0x10, sizeof(data));
+    memcpy(prediction, data, 2 * sizeof(float));
+}
 
-    struct dual_frame *frame = &g_dual_frame;
-    uint64_t stamp;
-    memcpy(&stamp, sp + 0x28, sizeof stamp);
-    unsigned valid = frame->stamp == stamp ? frame->valid : 0;
-    if (frame->stamp != stamp)
-        __atomic_add_fetch(&picoet_g.n_stamp_miss, 1, __ATOMIC_RELAXED);
-    frame->valid = 0; /* consume at most once, even when both eyes are invalid */
+// ---- per-eye quality, reference images and owner state -----------------------
 
-    unsigned applied = 0;
+// Each State belongs to one freshly constructed stock FaceTrackor. The caller
+// serializes that owner's calls and removes the State when the owner is destroyed.
+struct EyeState {
+    int32_t classification = -1;
+    uint64_t window_samples = 0;
+    int32_t window_good = 0;
+    bool reference_present = false;
+    uint64_t reference_generation = 0;
+    uint64_t reference_update = 0;
+    uint64_t successful_updates = 0;
+};
+
+// Replays only the stock shared-reference event that resets mouth quality.
+// Neither independent eye's quality, reference, or numerical output reads it.
+struct MouthQualityCompatibility {
+    std::deque<uint8_t> eye_samples[2];
+    int32_t eye_good[2] {};
+    bool shared_reference_present = false;
+};
+
+struct State {
+    EyeState eyes[2];
+    const void *frame_current[2] {};
+    MouthQualityCompatibility mouth_compatibility;
+};
+
+struct Validity {
+    bool eye[2];
+    float combined;
+};
+
+constexpr size_t kReferenceOffsets[2] = {0x8, 0x68};
+constexpr size_t kQueueOffsets[2] = {0x120, 0x150};
+constexpr size_t kCountOffsets[2] = {0x110, 0x114};
+
+// Reproduces the _OutputArray built at 0x62b90..0x62ba8 / 0x62bac..0x62bc0.
+// It refers to a stock-constructed Mat; it is not a memcpy of the Mat header.
+struct MatOutput {
+    int32_t flags;
+    int32_t padding;
+    void *object;
+    uint64_t size;
+};
+static_assert(sizeof(MatOutput) == 0x18, "stock AArch64 OutputArray ABI");
+static_assert(offsetof(MatOutput, object) == 8, "stock OutputArray object offset");
+
+void copy_reference(uintptr_t base, void *destination, const void *current)
+{
+    MatOutput output {0x02010000, 0, destination, 0};
+    using CopyTo = void (*)(const void *, const MatOutput *);
+    reinterpret_cast<CopyTo>(base + 0x12953c)(current, &output);
+}
+
+int32_t advance_legacy_quality(std::deque<uint8_t> &samples, int32_t &good,
+                               uint64_t window, int32_t threshold, float probability)
+{
+    // Stock 0x62810..0x62904 removes exactly ONE oldest sample if size >= window.
+    // The count subtraction is skipped when the current good count is zero.
+    if (samples.size() >= window) {
+        if (good > 0) good -= samples.front();
+        samples.pop_front();
+    }
+    // 0x62974 loads float bits 0x3ecccccd; cset gt is a strict comparison.
+    const uint8_t sample = probability > 0.4f;
+    samples.push_back(sample);
+    good += sample;
+    if (good > threshold) return 1;
+    // Match the unsigned false-count comparison at 0x62a28/0x62a4c.
+    const uint64_t bad = samples.size() - static_cast<uint64_t>(int64_t(good));
+    return bad > static_cast<uint64_t>(int64_t(threshold)) ? 0 : -1;
+}
+
+void begin_reference_frame(State &state)
+{
+    state.frame_current[0] = nullptr;
+    state.frame_current[1] = nullptr;
+}
+
+// Call after a normally completed trackor call. Reads the stock per-eye quality
+// queues/counters; does not advance or clear them.
+Validity observe_quality(State &state, const void *owner)
+{
+    const int32_t threshold = load<int32_t>(owner, 0x104);
+    Validity validity {};
     for (unsigned eye = 0; eye < 2; ++eye) {
-        size_t base = eye ? 0xc0 : 0x50;
-        const float *single = eye ? frame->right : frame->left;
-        int usable = (valid & (1u << eye)) && sp[base] && sp[base + 0x10];
-        if (usable) {
-            float origin_x, xy[2];
-            memcpy(&origin_x, sp + base + 4, sizeof origin_x);
-            xy[0] = single[0] - origin_x / 1.2f;
-            xy[1] = single[1];
-            usable = isfinite(xy[0]) && isfinite(xy[1]);
-            if (usable) {
-                memcpy(sp + base + 0x14, xy, sizeof xy);
-                applied |= 1u << eye;
-                __atomic_add_fetch(&picoet_g.n_fix, 1, __ATOMIC_RELAXED);
-            }
-        }
-        if (!usable) {
-            sp[base + 0x10] = 0; /* only gaze direction; openness/origin untouched */
-            uint32_t *counter = eye ? &picoet_g.n_invalid_right : &picoet_g.n_invalid_left;
-            __atomic_add_fetch(counter, 1, __ATOMIC_RELAXED);
-        }
+        auto &value = state.eyes[eye];
+        value.window_samples = load<uint64_t>(owner, kQueueOffsets[eye] + 0x28);
+        value.window_good = load<int32_t>(owner, kCountOffsets[eye]);
+        const int64_t bad = static_cast<int64_t>(value.window_samples) - value.window_good;
+        value.classification = value.window_good > threshold ? 1 : bad > threshold ? 0 : -1;
+        ++value.successful_updates;
+        validity.eye[eye] = value.classification != 0;
     }
-    // One example of each validity combination per tracking thread. This shows
-    // actual writeback, rather than inferring it from Hook A installation.
-    static _Thread_local unsigned reported;
-    if (!(reported & (1u << applied))) {
-        reported |= 1u << applied;
-        float left[2], right[2], combined[2];
-        memcpy(left, sp + 0x64, sizeof left);
-        memcpy(right, sp + 0xd4, sizeof right);
-        memcpy(combined, sp + 0x20, sizeof combined);
-        log_fmt("P4 apply: stamp=%llu source=%u output=%u L=(%f,%f) R=(%f,%f) C=(%f,%f)",
-                (unsigned long long)stamp, valid, applied,
-                (double)left[0], (double)left[1], (double)right[0], (double)right[1],
-                (double)combined[0], (double)combined[1]);
-    }
+    // The stock 0xd8 return has only one eye-group validity float. Preserve its
+    // OR policy while exposing both local decisions separately to the caller.
+    validity.combined = (validity.eye[0] || validity.eye[1]) ? 1.0f : 0.0f;
+    return validity;
 }
 
-static int install_hookb(void *base)
+// For the 0x62f90 hook's second Mat argument. eye is ABI input order, not a
+// separately verified physical left/right identity. current is its first Mat.
+const void *select_reference(State &state, void *owner, unsigned eye,
+                             const void *current)
 {
-    const unsigned char *b = (const unsigned char *)base;
-    static const unsigned char exp6cc[4] = {0xea, 0x27, 0x40, 0xb9};
+    state.frame_current[eye] = current;
+    return state.eyes[eye].reference_present
+        ? static_cast<unsigned char *>(owner) + kReferenceOffsets[eye]
+        : current;
+}
 
-    unsigned long tail = (unsigned long)base + PLUGIN_TAIL_OFF;
-    unsigned long tail_end = (unsigned long)base + PLUGIN_TAIL_END;
-    unsigned long site = (unsigned long)base + PLUGIN_OFF_HOOKB;
-
-    unsigned long rstart = 0, rend = 0;
-    int prot = 0;
-    if (find_region(tail, &rstart, &rend, &prot) != 0 ||
-        (prot & (PROT_READ | PROT_EXEC)) != (PROT_READ | PROT_EXEC)) {
-        append_log("P4: plugin tail not in a readable executable mapping; skip");
-        return -1;
-    }
-    if (tail_end > rend) {
-        append_log("P4: plugin tail page extends past the mapping; skip");
-        return -1;
-    }
-
-    unsigned long srstart = 0, srend = 0;
-    int sprot = 0;
-    if (find_region(site, &srstart, &srend, &sprot) != 0 ||
-        (sprot & (PROT_READ | PROT_EXEC)) != (PROT_READ | PROT_EXEC)) {
-        append_log("P4: hook B site not in a readable executable mapping; skip");
-        return -1;
-    }
-
-    if (memcmp(b + PLUGIN_OFF_HOOKB, exp6cc, 4) != 0) {
-        append_log("P4 guard: hook B site mismatch; skip");
-        return -1;
-    }
-
-    int64_t bdiff = (int64_t)tail - (int64_t)site;
-    if ((bdiff & 3) != 0 || bdiff < -(1 << 25) || bdiff >= (1 << 25)) {
-        append_log("P4: hook B branch out of range; skip");
-        return -1;
-    }
-
-    size_t leaf_len = (size_t)(picoet_leaf_end - picoet_leaf_start);
-    if (leaf_len == 0 || leaf_len > 512 || tail + leaf_len > tail_end) {
-        append_log("P4: leaf does not fit the plugin tail; skip");
-        return -1;
-    }
-    for (size_t i = 0; i < leaf_len; i++) {
-        if (b[PLUGIN_TAIL_OFF + i] != 0) {
-            append_log("P4: plugin tail is not zero; skip");
-            return -1;
+uint32_t finish_references(State &state, uintptr_t base, void *owner,
+                           const void *eye0, const void *eye1)
+{
+    const void *current[2] = {eye0, eye1};
+    uint32_t captured = 0;
+    for (unsigned eye = 0; eye < 2; ++eye) {
+        auto &value = state.eyes[eye];
+        if (value.classification == 0) {
+            value.reference_present = false;
+        } else if (value.classification == 1 && !value.reference_present) {
+            copy_reference(base, static_cast<unsigned char *>(owner) + kReferenceOffsets[eye],
+                           current[eye]);
+            using ClearQueue = void (*)(void *);
+            reinterpret_cast<ClearQueue>(base + 0x5e7a0)(
+                static_cast<unsigned char *>(owner) + kQueueOffsets[eye]);
+            store<int32_t>(owner, kCountOffsets[eye], 0);
+            value.reference_present = true;
+            ++value.reference_generation;
+            value.reference_update = value.successful_updates;
+            captured |= uint32_t(1) << eye;
         }
     }
+    // Force stock's fallback path; select_reference supplies the independent
+    // second channel. A single stock byte cannot encode both reference states.
+    store<uint8_t>(owner, 1, 0);
+    return captured;
+}
 
+// Once per normally completed frame, selects each eye's reference from this
+// frame's own current Mat.
+uint32_t finish_references(State &state, uintptr_t base, void *owner)
+{
+    return finish_references(state, base, owner, state.frame_current[0], state.frame_current[1]);
+}
+
+// Once per normally completed frame, AFTER observe_quality/finish_references
+// and before the next stock trackor call. raw24 is the captured infer result,
+// including quality probabilities at 20/22. Failed frames must not call this.
+bool preserve_mouth_quality_reset(State &state, uintptr_t base, void *owner,
+                                  const float raw24[24])
+{
+    auto &legacy = state.mouth_compatibility;
+    const uint64_t window = static_cast<uint64_t>(int64_t(load<int32_t>(owner, 0x100)));
+    const int32_t threshold = load<int32_t>(owner, 0x104);
+    int32_t classification[2];
+    for (unsigned eye = 0; eye < 2; ++eye) {
+        classification[eye] = advance_legacy_quality(legacy.eye_samples[eye], legacy.eye_good[eye],
+                                                     window, threshold, raw24[20 + 2 * eye]);
+    }
+    // Stock 0x62b70..0x62b8c: both 0 clears the legacy shared flag; otherwise
+    // only an explicit 1 with no existing reference triggers queue resets.
+    if (classification[0] == 0 && classification[1] == 0) {
+        legacy.shared_reference_present = false;
+        return false;
+    }
+    if ((classification[0] == 1 || classification[1] == 1) && !legacy.shared_reference_present) {
+        // 0x62bcc zeroes the mouth count, then 0x62be0 clears its stock deque.
+        store<int32_t>(owner, 0x118, 0);
+        using ClearQueue = void (*)(void *);
+        reinterpret_cast<ClearQueue>(base + 0x5e7a0)(static_cast<unsigned char *>(owner) + 0x180);
+        for (unsigned eye = 0; eye < 2; ++eye) {
+            legacy.eye_samples[eye].clear();
+            legacy.eye_good[eye] = 0;
+        }
+        legacy.shared_reference_present = true;
+        return true;
+    }
+    return false;
+}
+
+// ---- frame context, registry and the expression hooks ------------------------
+
+uintptr_t g_expr_plugin = 0;
+std::atomic<bool> g_expr_ready {false};
+
+struct OwnerState {
+    State reference;
+    FilterState filter {};
+    NativeBrowFilter left, right;
+    explicit OwnerState(uintptr_t base) : left(base), right(base) {}
+};
+
+// Function-local statics on purpose: installed hooks can run on another service
+// thread before this translation unit's dynamic initializers, so first use must
+// construct the registry and its lock.
+std::mutex &registry_mutex()
+{
+    static std::mutex value;
+    return value;
+}
+
+std::unordered_map<void *, std::unique_ptr<OwnerState>> &owner_registry()
+{
+    static std::unordered_map<void *, std::unique_ptr<OwnerState>> value;
+    return value;
+}
+
+struct Frame {
+    void *owner = nullptr;
+    OwnerState *state = nullptr;
+    unsigned raw_calls = 0, merge_calls[2] {};
+    size_t raw_length = 0;
+    bool completion_seen = false, completed = false, pending_export = false;
+    int32_t export_state[2] {};
+    float raw[24] {}, post[20] {}, filtered[20] {}, final[52] {};
+    float right_inner = 0;
+};
+thread_local Frame g_frame;
+
+using MergeFn = void (*)(const void *, const void *, void *);
+using DestroyFn = void (*)(void *);
+MergeFn g_original_merge = nullptr;
+DestroyFn g_original_destroy = nullptr;
+
+void reset_owner(void *owner);
+
+void forget_owner(void *owner)
+{
+    if (g_frame.owner == owner) g_frame = Frame {};
+    std::lock_guard<std::mutex> lock(registry_mutex());
+    owner_registry().erase(owner);
+}
+
+void reset_owner(void *owner)
+{
+    forget_owner(owner);
+}
+
+void begin_frame(void *owner)
+{
+    g_frame = Frame {};
+    if (!g_expr_ready.load(std::memory_order_acquire)) return;
+    std::lock_guard<std::mutex> lock(registry_mutex());
+    auto &state = owner_registry()[owner];
+    if (!state) state = std::make_unique<OwnerState>(g_expr_plugin);
+    g_frame = Frame {};
+    g_frame.owner = owner;
+    g_frame.state = state.get();
+    begin_reference_frame(state->reference);
+}
+
+void observe_infer(void *engine, const float *values, size_t count)
+{
+    if (!g_frame.state || engine != load<void *>(g_frame.owner, 0x880)) return;
+    ++g_frame.raw_calls;
+    g_frame.raw_length = count;
+    if (count == 24) memcpy(g_frame.raw, values, sizeof(g_frame.raw));
+}
+
+void observe_completion(bool completed)
+{
+    if (!g_frame.state) return;
+    g_frame.completion_seen = true;
+    g_frame.completed = completed;
+}
+
+void end_frame(float *output)
+{
+    if (!g_frame.state) return;
+    if (!g_frame.completion_seen || !g_frame.completed || g_frame.raw_calls != 1 ||
+        g_frame.raw_length != 24 || g_frame.merge_calls[0] != 1 || g_frame.merge_calls[1] != 1) {
+        output[52] = 0;
+        // Keep the explicit expression capability on a failed live frame so the
+        // receiver holds each eye's own last valid value instead of falling back
+        // to the fused source.
+        memcpy(g_frame.final, output, sizeof(g_frame.final));
+        g_frame.pending_export = true;
+        return;
+    }
+    postprocess_eye20(g_frame.raw, g_frame.post);
+    void *contexts[2] = {&g_frame.state->left, &g_frame.state->right};
+    filter_eye20(g_frame.state->filter, g_frame.raw, g_frame.post, g_frame.filtered,
+                 NativeBrowFilter::predict, contexts);
+    g_frame.right_inner = writeback_expression52(g_frame.filtered, output);
+    const Validity validity = observe_quality(g_frame.state->reference, g_frame.owner);
+    output[52] = validity.combined;
+    (void)finish_references(g_frame.state->reference, g_expr_plugin, g_frame.owner);
+    (void)preserve_mouth_quality_reset(g_frame.state->reference, g_expr_plugin, g_frame.owner,
+                                       g_frame.raw);
+    memcpy(g_frame.final, output, sizeof(g_frame.final));
+    for (unsigned i = 0; i < 2; ++i)
+        g_frame.export_state[i] = g_frame.state->reference.eyes[i].classification;
+    g_frame.pending_export = true;
+}
+
+__attribute__((noinline)) void merge_proxy(const void *current, const void *reference,
+                                           void *result)
+{
+    const uintptr_t caller = reinterpret_cast<uintptr_t>(__builtin_return_address(0)) - g_expr_plugin;
+    if (g_frame.state) {
+        int eye = (caller == 0x626dc || caller == 0x62cb0) ? 0 :
+                  (caller == 0x626ec || caller == 0x62cc0) ? 1 : -1;
+        if (eye >= 0) {
+            ++g_frame.merge_calls[eye];
+            reference = select_reference(g_frame.state->reference, g_frame.owner, unsigned(eye), current);
+        }
+    }
+    g_original_merge(current, reference, result);
+}
+
+void export_prefix(shadowhook_cpu_context_t *cpu, void *)
+{
+    if (!g_frame.pending_export) return;
+    void *prefix = reinterpret_cast<void *>(cpu->regs[0]);
+    // Match the same call's standard output before attaching sidecar fields.
+    if (memcmp(static_cast<unsigned char *>(prefix) + 8, g_frame.final, sizeof(g_frame.final))) return;
+    store<float>(prefix, 216, g_frame.right_inner);
+    store<int32_t>(prefix, 220, g_frame.export_state[0]);
+    store<int32_t>(prefix, 224, g_frame.export_state[1]);
+    store<uint32_t>(prefix, 228, 0x31495045); // EPI1
+    store<uint32_t>(prefix, 232, 1);
+    g_frame.pending_export = false; // This pending callback identity is consumed once.
+}
+
+void destroy_proxy(void *owner)
+{
+    forget_owner(owner);
+    g_original_destroy(owner);
+}
+
+// ---- outer proxies on the tracked function entry points ----------------------
+
+infer_fn_t g_original_infer = nullptr;
+trackor_fn_t g_original_trackor = nullptr;
+init_fn_t g_original_init = nullptr;
+
+__attribute__((noinline)) expr_vec infer_proxy(void *a0, void *engine, const expr_vec *images)
+{
+    expr_vec result = g_original_infer(a0, engine, images);
+    size_t bytes = uintptr_t(result.end) - uintptr_t(result.begin);
+    observe_infer(engine, static_cast<const float *>(result.begin), bytes / sizeof(float));
+    return result; // The stock caller still owns and frees exactly the original vector.
+}
+
+__attribute__((noinline)) expr_output trackor_proxy(void *owner, const expr_mat *eye0,
+                                                    const expr_mat *eye1, const expr_mat *mouth)
+{
+    begin_frame(owner);
+    expr_output result = g_original_trackor(owner, eye0, eye1, mouth);
+    end_frame(result.values);
+    return result;
+}
+
+void initialization_proxy(void *owner)
+{
+    if (!load<unsigned char>(owner, 0)) reset_owner(owner);
+    g_original_init(owner);
+}
+
+void normal_exit(shadowhook_cpu_context_t *, void *)
+{
+    observe_completion(true);
+}
+
+void exception_exit(shadowhook_cpu_context_t *, void *)
+{
+    observe_completion(false);
+}
+
+// ---- installation: guards, hooks, patches and rollback -----------------------
+
+bool guard_word(uintptr_t base, size_t offset, uint32_t expected)
+{
+    const uint32_t got = load<uint32_t>(reinterpret_cast<const void *>(base + offset), 0);
+    log_fmt("guard %s word site=0x%zx got=0x%08x expected=0x%08x",
+            got == expected ? "ok" : "failed", offset, got, expected);
+    return got == expected;
+}
+
+// FNV-1a compatibility anchors for the supported firmware, not PICO code.
+bool guard_windows(uintptr_t base)
+{
+    static const struct { size_t offset, length; uint64_t expected; } windows[] = {
+        {0x605ac, 0x1f0, 0x31995bf748f7c422ULL},
+        {0x613e0, 0x2a0, 0xb67cb8dc0066e98dULL},
+        {0x625b4, 0x9dc, 0x0379770f754e251fULL},
+    };
+    for (const auto &w : windows) {
+        const uint64_t got =
+            fnv1a64_mem(reinterpret_cast<const unsigned char *>(base + w.offset), w.length);
+        log_fmt("guard %s window site=0x%zx length=0x%zx got=0x%016llX expected=0x%016llX",
+                got == w.expected ? "ok" : "failed", w.offset, w.length,
+                (unsigned long long)got, (unsigned long long)w.expected);
+        if (got != w.expected) return false;
+    }
+    return true;
+}
+
+bool guard_init_head(uintptr_t base)
+{
+    static const uint32_t head[] = {0xd10403ff, 0xf90063f7, 0xa90d57f6, 0xa90e4ff4};
+    for (unsigned i = 0; i < 4; ++i) {
+        if (!guard_word(base, 0x60998 + 4 * size_t(i), head[i])) return false;
+    }
+    return true;
+}
+
+void *install_function(uintptr_t base, size_t offset, const char *stage, void *proxy, void **original)
+{
+    void *hook = shadowhook_hook_func_addr(reinterpret_cast<void *>(base + offset), proxy, original);
+    int error = shadowhook_get_errno();
+    log_fmt("hook stage=%s site=0x%zx address=%p handle=%p trampoline=%p errno=%d message=%s",
+            stage, offset, reinterpret_cast<void *>(base + offset), hook, *original, error,
+            shadowhook_to_errmsg(error));
+    return hook;
+}
+
+// Intercept one instruction. ShadowHook must rewrite exactly four bytes; if the
+// 20 bytes after the site changed, the intercept is rejected and rolled back.
+void *intercept_one_instruction(uintptr_t base, size_t offset, const char *stage,
+                                shadowhook_interceptor_t callback)
+{
+    auto *site = reinterpret_cast<unsigned char *>(base + offset);
+    unsigned char following[20];
+    uint32_t original_instruction = load<uint32_t>(site, 0);
+    memcpy(following, site + 4, sizeof(following));
+    void *hook = shadowhook_intercept_instr_addr(site, callback, nullptr,
+                                                SHADOWHOOK_INTERCEPT_WITH_FPSIMD_READ_WRITE);
+    int error = shadowhook_get_errno();
+    if (hook && memcmp(following, site + 4, sizeof(following))) {
+        char expected[41], got[41];
+        static const char hex[] = "0123456789abcdef";
+        for (unsigned i = 0; i < 20; ++i) {
+            expected[2 * i] = hex[following[i] >> 4];
+            expected[2 * i + 1] = hex[following[i] & 15];
+            got[2 * i] = hex[site[4 + i] >> 4];
+            got[2 * i + 1] = hex[site[4 + i] & 15];
+        }
+        expected[40] = got[40] = 0;
+        log_fmt("intercept rejected stage=%s site=0x%zx address=%p required=4-byte "
+                "original_instruction=0x%08x patched_instruction=0x%08x following_expected=%s following_got=%s",
+                stage, offset, site, original_instruction, load<uint32_t>(site, 0), expected, got);
+        int rc = shadowhook_unintercept(hook);
+        int cleanup_error = shadowhook_get_errno();
+        log_fmt("rollback rejected-intercept site=0x%zx rc=%d errno=%d message=%s",
+                offset, rc, cleanup_error, shadowhook_to_errmsg(cleanup_error));
+        return nullptr;
+    }
+    if (hook)
+        log_fmt("intercept accepted stage=%s site=0x%zx rewrite=4-byte original_instruction=0x%08x",
+                stage, offset, original_instruction);
+    else
+        log_fmt("intercept failed stage=%s site=0x%zx address=%p errno=%d message=%s",
+                stage, offset, site, error, shadowhook_to_errmsg(error));
+    return hook;
+}
+
+bool patch_word(uintptr_t base, size_t offset, uint32_t word)
+{
     long pagesz = sysconf(_SC_PAGESIZE);
     if (pagesz <= 0)
         pagesz = 4096;
-    unsigned long tail_page = tail & ~((unsigned long)pagesz - 1);
+    const size_t size = static_cast<size_t>(pagesz);
+    void *page = reinterpret_cast<void *>((base + offset) & ~(static_cast<uintptr_t>(size) - 1));
+    if (mprotect(page, size, PROT_READ | PROT_WRITE | PROT_EXEC)) {
+        log_fmt("patch: mprotect RWX failed site=0x%zx errno=%d", offset, errno);
+        return false;
+    }
+    store<uint32_t>(reinterpret_cast<void *>(base + offset), 0, word);
+    __builtin___clear_cache(reinterpret_cast<char *>(base + offset),
+                            reinterpret_cast<char *>(base + offset + 4));
+    if (mprotect(page, size, PROT_READ | PROT_EXEC)) {
+        log_fmt("patch: restore prot failed site=0x%zx errno=%d", offset, errno);
+        return false;
+    }
+    return true;
+}
 
-    unsigned char leaf[512];
-    memcpy(leaf, picoet_leaf_start, leaf_len);
-    size_t g_off = (size_t)(picoet_leaf_apply_slot - picoet_leaf_start);
-    size_t ret_off = (size_t)(picoet_leaf_ret_pc - picoet_leaf_start);
-    if (g_off + 8 > leaf_len || ret_off + 4 > leaf_len) {
-        append_log("P4: leaf template slots out of range; skip");
+void rollback_hook(void *hook, const char *stage, size_t offset, bool instruction)
+{
+    if (!hook) return;
+    int rc = instruction ? shadowhook_unintercept(hook) : shadowhook_unhook(hook);
+    int error = shadowhook_get_errno();
+    log_fmt("rollback stage=%s site=0x%zx rc=%d errno=%d message=%s", stage, offset, rc, error,
+            shadowhook_to_errmsg(error));
+}
+
+// The r4 hook set: two single-instruction bypasses, the per-eye reference merge,
+// the owner destroy hook and the EPI1 export callback. Everything rolls back on
+// failure; g_expr_ready flips only after the whole set is in place.
+int install_expression(uintptr_t base)
+{
+    static const struct { size_t offset; uint32_t word; } sites[] = {
+        {kOffMerge, kWordMerge}, {kOffExport, kWordExport}, {kOffBlinkCopyPatch, kWordBlinkCopy},
+        {kOffSharedRefPatch, kWordSharedRef}, {kOffDestroy, kWordDestroy},
+    };
+    for (const auto &site : sites) {
+        if (!guard_word(base, site.offset, site.word)) return -1;
+    }
+    g_expr_plugin = base;
+
+    g_original_merge = nullptr;
+    void *merge_hook = install_function(base, kOffMerge, "merge", reinterpret_cast<void *>(merge_proxy),
+                                        reinterpret_cast<void **>(&g_original_merge));
+    if (!merge_hook || !g_original_merge) return -1;
+
+    g_original_destroy = nullptr;
+    void *destroy_hook = install_function(base, kOffDestroy, "destroy", reinterpret_cast<void *>(destroy_proxy),
+                                          reinterpret_cast<void **>(&g_original_destroy));
+    if (!destroy_hook || !g_original_destroy) {
+        shadowhook_unhook(merge_hook);
         return -1;
     }
-    uint64_t g_addr = (uint64_t)(uintptr_t)&apply_dual;
-    memcpy(leaf + g_off, &g_addr, 8);
 
-    unsigned long ret_pc = tail + ret_off;
-    unsigned long ret_target = (unsigned long)base + PLUGIN_OFF_HOOKB_RETURN;
-    int64_t diff = (int64_t)ret_target - (int64_t)ret_pc;
-    if ((diff & 3) != 0 || diff < -(1 << 25) || diff >= (1 << 25)) {
-        append_log("P4: hook B return branch out of range; skip");
+    void *export_hook = intercept_one_instruction(base, kOffExport, "export", export_prefix);
+    if (!export_hook) {
+        shadowhook_unhook(destroy_hook);
+        shadowhook_unhook(merge_hook);
         return -1;
     }
-    uint32_t br = 0x14000000u | ((uint32_t)(diff >> 2) & 0x03FFFFFFu);
-    memcpy(leaf + ret_off, &br, 4);
 
-    int changed_tail = 0;
-    if ((prot & PROT_WRITE) == 0) {
-        if (mprotect((void *)tail_page, (size_t)pagesz, prot | PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
-            log_fmt("P4: tail mprotect RWX failed errno=%d; skip", errno);
-            return -1;
-        }
-        changed_tail = 1;
-    }
-    memcpy((void *)tail, leaf, leaf_len);
-    __builtin___clear_cache((char *)tail, (char *)tail + leaf_len);
-    if (memcmp((const void *)tail, leaf, leaf_len) != 0) {
-        if (changed_tail)
-            mprotect((void *)tail_page, (size_t)pagesz, prot);
-        append_log("P4: leaf readback mismatch; skip");
+    if (!patch_word(base, kOffBlinkCopyPatch, kPatchBlinkCopy) ||
+        !patch_word(base, kOffSharedRefPatch, kPatchSharedRef)) {
+        patch_word(base, kOffBlinkCopyPatch, kWordBlinkCopy);
+        patch_word(base, kOffSharedRefPatch, kWordSharedRef);
+        shadowhook_unintercept(export_hook);
+        shadowhook_unhook(destroy_hook);
+        shadowhook_unhook(merge_hook);
         return -1;
     }
-    if (changed_tail && mprotect((void *)tail_page, (size_t)pagesz, prot) != 0)
-        log_fmt("P4: WARNING tail prot restore failed errno=%d", errno);
-
-    unsigned long site_page = site & ~((unsigned long)pagesz - 1);
-    int changed_site = 0;
-    if ((sprot & PROT_WRITE) == 0) {
-        if (mprotect((void *)site_page, (size_t)pagesz, sprot | PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
-            log_fmt("P4: site mprotect RWX failed errno=%d; skip", errno);
-            return -1;
-        }
-        changed_site = 1;
-    }
-    uint32_t b_inst = 0x14000000u | ((uint32_t)(bdiff >> 2) & 0x03FFFFFFu);
-    __atomic_store_n((uint32_t *)(void *)site, b_inst, __ATOMIC_RELEASE);
-    __builtin___clear_cache((char *)site, (char *)site + 4);
-    if (__atomic_load_n((const uint32_t *)(const void *)site, __ATOMIC_ACQUIRE) != b_inst) {
-        __atomic_store_n((uint32_t *)(void *)site, 0xb94027eau /* ea 27 40 b9 */, __ATOMIC_RELEASE);
-        __builtin___clear_cache((char *)site, (char *)site + 4);
-        if (changed_site)
-            mprotect((void *)site_page, (size_t)pagesz, sprot);
-        append_log("P4: hook B site readback mismatch; original restored; skip");
-        return -1;
-    }
-    if (changed_site && mprotect((void *)site_page, (size_t)pagesz, sprot) != 0)
-        log_fmt("P4: WARNING site prot restore failed errno=%d", errno);
-
-    picoet_dual_leaf_installed = 1;
-    log_fmt("P4 dual: Hook B leaf installed at 0x%lx (site 0x%lx -> b)", tail, site);
+    g_expr_ready.store(true, std::memory_order_release);
+    append_log("expression independent: reference merge, owner lifecycle and EPI1 export installed; "
+               "blink-copy and shared-reference bypasses patched");
     return 0;
 }
 
-/* Mat()/ ~Mat()/operator delete entries used by the proxy (design 5.4). */
-static int dual_internals_ok(const unsigned char *b)
+// Full plugin installation: guards first, then the outer entry hooks, then the
+// expression hook set. Any failure rolls back everything installed so far.
+int install_plugin(uintptr_t base)
 {
-    static const unsigned char exp_ctor[4] = {0xe8, 0x5f, 0xa8, 0x52}; /* mov w8,#0x42ff0000 */
-    static const unsigned char exp_dtor[4] = {0xf4, 0x4f, 0xbe, 0xa9}; /* stp x20,x19,[sp,#-0x20]! */
-    static const unsigned char exp_del[4] = {0x65, 0xcf, 0xf3, 0x17}; /* b <thunk to operator delete> */
-
-    if (!plugin_range_readable(b, PLUGIN_OFF_MAT_CTOR, 4) ||
-        !plugin_range_readable(b, PLUGIN_OFF_MAT_DTOR, 4) ||
-        !plugin_range_readable(b, PLUGIN_OFF_OP_DELETE, 4) ||
-        memcmp(b + PLUGIN_OFF_MAT_CTOR, exp_ctor, 4) != 0 ||
-        memcmp(b + PLUGIN_OFF_MAT_DTOR, exp_dtor, 4) != 0 ||
-        memcmp(b + PLUGIN_OFF_OP_DELETE, exp_del, 4) != 0) {
-        append_log("P4 guard: Mat/operator-delete prologue mismatch; skip");
+    log_fmt("install begin pid=%ld base=%p version=%s", (long)getpid(),
+            reinterpret_cast<void *>(base), kExpressionVersion);
+    if (!guard_windows(base) || !guard_init_head(base)) {
+        append_log("plugin guard mismatch; no hooks installed");
         return -1;
     }
-    return 0;
-}
 
-static int install_dual(void *base)
-{
-    const unsigned char *b = (const unsigned char *)base;
-    if (plugin_guards_ok(b) != 0 || dual_internals_ok(b) != 0)
-        return -1;
-
-    /* Leaf first: if the Hook A proxy is never installed the leaf is inert. */
-    if (install_hookb(base) != 0)
-        return -1;
-
-    g_mat_ctor = (void_fn1_t)(void *)((uintptr_t)base + PLUGIN_OFF_MAT_CTOR);
-    g_mat_dtor = (void_fn1_t)(void *)((uintptr_t)base + PLUGIN_OFF_MAT_DTOR);
-    g_op_delete = (void_fn1_t)(void *)((uintptr_t)base + PLUGIN_OFF_OP_DELETE);
-
-    /* ShadowHook stores *orig_addr before patching the site (sh_inst.c), so handing
-     * it &g_orig_infer directly closes the "site patched but orig not set" window;
-     * the NULL guard in infer_proxy stays as a second line of defence. */
-    g_orig_infer = NULL;
-    void *stub = shadowhook_hook_func_addr((void *)(b + PLUGIN_OFF_INFER),
-                                           (void *)infer_proxy, (void **)&g_orig_infer);
-    if (!stub || !g_orig_infer) {
-        log_fmt("P4: Hook A real hook failed errno=%d (Hook B installed but inert)",
-                shadowhook_get_errno());
-        return -1;
+    g_original_infer = nullptr;
+    g_original_trackor = nullptr;
+    g_original_init = nullptr;
+    void *infer_hook = install_function(base, kOffInfer, "infer", reinterpret_cast<void *>(infer_proxy),
+                                        reinterpret_cast<void **>(&g_original_infer));
+    void *trackor_hook = nullptr, *init_hook = nullptr, *normal_hook = nullptr, *exception_hook = nullptr;
+    if (infer_hook)
+        trackor_hook = install_function(base, kOffTrackor, "trackor", reinterpret_cast<void *>(trackor_proxy),
+                                        reinterpret_cast<void **>(&g_original_trackor));
+    if (trackor_hook)
+        init_hook = install_function(base, kOffOwnerInit, "owner-init", reinterpret_cast<void *>(initialization_proxy),
+                                     reinterpret_cast<void **>(&g_original_init));
+    if (init_hook) normal_hook = intercept_one_instruction(base, kOffNormalExit, "normal-exit", normal_exit);
+    if (normal_hook) exception_hook = intercept_one_instruction(base, kOffCatchExit, "catch-exit", exception_exit);
+    if (exception_hook && install_expression(base) == 0) {
+        append_log("install complete; expression independent hooks ready");
+        return 0;
     }
-    __atomic_store_n(&picoet_dual_installed, 1, __ATOMIC_RELEASE);
-    picoet_plugin_base = (unsigned long long)base;
-    log_fmt("P4 dual: Hook A real installed base=0x%llx orig=0x%llx",
-            (unsigned long long)base, (unsigned long long)g_orig_infer);
-    return 0;
+
+    append_log("plugin install failed; rolling back installed hooks and patches; service restart required");
+    rollback_hook(exception_hook, "catch-exit", kOffCatchExit, true);
+    rollback_hook(normal_hook, "normal-exit", kOffNormalExit, true);
+    rollback_hook(init_hook, "owner-init", kOffOwnerInit, false);
+    rollback_hook(trackor_hook, "trackor", kOffTrackor, false);
+    rollback_hook(infer_hook, "infer", kOffInfer, false);
+    return -1;
 }
 
-// ---- P3 eye-mode patch (left/right) -----------------------------------------
-//
-// Replaces one instruction at plugin 0x5cd68:
-//   orig : ldr  w8, [x8, #0x108]  (08 09 41 b9)
-//   left : movz w8, #1            (28 00 80 52)
-//   right: movz w8, #0            (08 00 80 52)
-// The mode comes from EYE_MODE_FILE ("off"|"left"|"right"|"dual"; off/dual do
-// not patch). The page is made writable, the guard bytes are checked, the new
-// instruction is written and verified by readback, the instruction cache is
-// flushed, and the original page protection is restored. Any failure only
-// logs; the host process is never crashed and unknown firmware is skipped.
+// ---- mode, plugin hand-off and bootstrap -------------------------------------
 
-static const unsigned char eye_orig4[4] = {0x08, 0x09, 0x41, 0xb9};
-static const unsigned char eye_left4[4] = {0x28, 0x00, 0x80, 0x52};
-static const unsigned char eye_right4[4] = {0x08, 0x00, 0x80, 0x52};
-
-/* little-endian arm64 instruction word (single 4-byte aligned store) */
-static uint32_t inst_word(const unsigned char b[4])
+/* /data/local/tmp/picoet-mode: "dual" installs the expression hook set,
+ * "off" or a missing/unreadable file keeps the gate hook only. */
+int read_enhanced_mode(void)
 {
-    return (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) |
-           ((uint32_t)b[3] << 24);
-}
-
-static int read_eye_mode(void)
-{
-    int fd = open(EYE_MODE_FILE, O_RDONLY | O_CLOEXEC);
+    int fd = open(kEyeModeFile, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
-        log_fmt("P3 mode: open %s failed errno=%d; treat as off", EYE_MODE_FILE, errno);
+        log_fmt("mode: open %s failed errno=%d; gate only", kEyeModeFile, errno);
         return 0;
     }
     char buf[32];
@@ -821,7 +1261,7 @@ static int read_eye_mode(void)
     int read_errno = errno;
     close(fd);
     if (n <= 0) {
-        log_fmt("P3 mode: empty/unreadable file (n=%ld errno=%d); treat as off", (long)n, read_errno);
+        log_fmt("mode: empty/unreadable file (n=%ld errno=%d); gate only", (long)n, read_errno);
         return 0;
     }
     buf[n] = '\0';
@@ -832,218 +1272,42 @@ static int read_eye_mode(void)
         else
             break;
     }
-    if (strcmp(buf, "left") == 0)
-        return 1;
-    if (strcmp(buf, "right") == 0)
-        return 2;
     if (strcmp(buf, "dual") == 0)
-        return 3;
+        return 1;
     if (strcmp(buf, "off") != 0)
-        log_fmt("P3 mode: unrecognized value '%s'; treat as off", buf);
+        log_fmt("mode: unrecognized value '%s'; gate only", buf);
     return 0;
 }
 
-static int maps_line_scope(const char *line, unsigned long *start, unsigned long *end, int *prot)
+void on_plugin_found(void *base)
 {
-    const char *p = line;
-    unsigned long a = 0;
-    int digits = 0;
-    while (*p && *p != '-') {
-        int v;
-        if (*p >= '0' && *p <= '9') v = *p - '0';
-        else if (*p >= 'a' && *p <= 'f') v = *p - 'a' + 10;
-        else if (*p >= 'A' && *p <= 'F') v = *p - 'A' + 10;
-        else return -1;
-        a = (a << 4) | (unsigned long)v;
-        p++;
-        digits++;
+    picoet_plugin_base = (unsigned long long)base;
+    if (install_plugin(reinterpret_cast<uintptr_t>(base)) != 0) {
+        report_runtime("failed");
+        return;
     }
-    if (*p != '-' || digits == 0)
-        return -1;
-    p++;
-    unsigned long b = 0;
-    digits = 0;
-    while (*p) {
-        int v;
-        if (*p >= '0' && *p <= '9') v = *p - '0';
-        else if (*p >= 'a' && *p <= 'f') v = *p - 'a' + 10;
-        else if (*p >= 'A' && *p <= 'F') v = *p - 'A' + 10;
-        else break;
-        b = (b << 4) | (unsigned long)v;
-        p++;
-        digits++;
-    }
-    if (digits == 0 || *p != ' ')
-        return -1;
-    p++;
-    int pr = 0;
-    if (p[0] == 'r') pr |= PROT_READ; else if (p[0] != '-') return -1;
-    if (p[1] == 'w') pr |= PROT_WRITE; else if (p[1] != '-') return -1;
-    if (p[2] == 'x') pr |= PROT_EXEC; else if (p[2] != '-') return -1;
-    *start = a;
-    *end = b;
-    *prot = pr;
-    return 0;
+    // dual means the gate and the expression hooks are both in place.
+    if (__atomic_load_n(&picoet_gate_installed, __ATOMIC_ACQUIRE))
+        __atomic_store_n(&picoet_dual_installed, 1, __ATOMIC_RELEASE);
+    report_runtime("ready");
 }
 
-static int find_region(unsigned long addr, unsigned long *start, unsigned long *end, int *prot)
+void *plugin_poll_thread(void *)
 {
-    int fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
-    if (fd < 0)
-        return -1;
-    static char line[512];
-    size_t ll = 0;
-    char buf[4096];
-    int rc = -1;
-    for (;;) {
-        ssize_t n = read(fd, buf, sizeof(buf));
-        if (n < 0) {
-            if (errno == EINTR)
-                continue;
-            break;
-        }
-        if (n == 0)
-            break;
-        for (ssize_t i = 0; i < n; i++) {
-            char c = buf[i];
-            if (c != '\n') {
-                if (ll + 1 < sizeof(line))
-                    line[ll++] = c;
-                continue;
-            }
-            line[ll] = '\0';
-            ll = 0;
-            unsigned long s = 0, e = 0;
-            int pr = 0;
-            if (maps_line_scope(line, &s, &e, &pr) == 0 && addr >= s && addr < e) {
-                *start = s;
-                *end = e;
-                *prot = pr;
-                rc = 0;
-                goto out;
-            }
-        }
-    }
-out:
-    close(fd);
-    return rc;
-}
-
-static int apply_eye_mode(void *base, int mode)
-{
-    const char *label = mode == 1 ? "left" : mode == 2 ? "right" : mode == 3 ? "dual" : "off";
-
-    if (mode != 1 && mode != 2) {
-        log_fmt("P3 mode: '%s'; no eye-mode patch", label);
-        return 0;
-    }
-
-    if (!g_plugin_guard_ok ||
-        !plugin_range_readable(base, PLUGIN_EYE_MODE_WIN_OFF, PLUGIN_EYE_MODE_WIN_LEN)) {
-        append_log("P3: required plugin/window guard unavailable; skip");
-        return -1;
-    }
-
-    unsigned long site = (unsigned long)base + PLUGIN_OFF_EYE_MODE;
-    unsigned long rstart = 0, rend = 0;
-    int prot = 0;
-    if (find_region(site, &rstart, &rend, &prot) != 0 ||
-        (prot & (PROT_READ | PROT_EXEC)) != (PROT_READ | PROT_EXEC)) {
-        append_log("P3: eye-mode site not in a readable executable mapping; skip");
-        return -1;
-    }
-
-    long pagesz = sysconf(_SC_PAGESIZE);
-    if (pagesz <= 0)
-        pagesz = 4096;
-    unsigned long page = site & ~((unsigned long)pagesz - 1);
-
-    int changed_prot = 0;
-    if ((prot & (PROT_READ | PROT_WRITE)) != (PROT_READ | PROT_WRITE)) {
-        if (mprotect((void *)page, (size_t)pagesz, prot | PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
-            log_fmt("P3: mprotect RWX failed errno=%d; skip", errno);
-            return -1;
-        }
-        changed_prot = 1;
-    }
-
-    const unsigned char *sitep = (const unsigned char *)site;
-    const unsigned char *want = mode == 1 ? eye_left4 : eye_right4;
-
-    if (fnv1a64_mem((const unsigned char *)base + PLUGIN_EYE_MODE_WIN_OFF,
-                    PLUGIN_EYE_MODE_WIN_LEN) != PLUGIN_EYE_MODE_FNV) {
-        if (changed_prot)
-            mprotect((void *)page, (size_t)pagesz, prot);
-        append_log("P3 guard: eye-mode window hash mismatch; skip");
-        return -1;
-    }
-    if (memcmp(sitep, eye_orig4, 4) != 0) {
-        if (changed_prot)
-            mprotect((void *)page, (size_t)pagesz, prot);
-        append_log("P3 guard: eye-mode site bytes mismatch; skip");
-        return -1;
-    }
-
-    uint32_t want_w = inst_word(want);
-    __atomic_store_n((uint32_t *)(void *)sitep, want_w, __ATOMIC_RELEASE);
-    __builtin___clear_cache((char *)sitep, (char *)sitep + 4);
-
-    if (__atomic_load_n((const uint32_t *)(const void *)sitep, __ATOMIC_ACQUIRE) != want_w) {
-        __atomic_store_n((uint32_t *)(void *)sitep, inst_word(eye_orig4), __ATOMIC_RELEASE);
-        __builtin___clear_cache((char *)sitep, (char *)sitep + 4);
-        if (changed_prot)
-            mprotect((void *)page, (size_t)pagesz, prot);
-        append_log("P3: readback mismatch after write; original restored; skip");
-        return -1;
-    }
-
-    if (changed_prot) {
-        if (mprotect((void *)page, (size_t)pagesz, prot) != 0) {
-            log_fmt("P3: WARNING restore prot failed errno=%d; retrying", errno);
-            if (mprotect((void *)page, (size_t)pagesz, prot) != 0)
-                log_fmt("P3: WARNING page left RWX; restore failed errno=%d", errno);
-        }
-    }
-
-    picoet_eye_mode_patched = 1;
-    log_fmt("P3 eye patch: mode=%s site=0x%lx orig=080941b9 -> %02x%02x%02x%02x; readback ok; prot=0x%x; p2_guard=%s",
-            label, site, want[0], want[1], want[2], want[3], prot,
-            g_plugin_guard_ok ? "ok" : "fail");
-    return 0;
-}
-
-static void on_plugin_found(void *b)
-{
-    int rc;
-    if (g_eye_mode == 3) {
-        rc = install_dual(b);
-        if (rc != 0)
-            append_log("P4: dual install failed; no dual gaze advertised");
-    } else {
-        rc = install_hooka_dryrun(b);
-        if (rc == 0)
-            rc = apply_eye_mode(b, g_eye_mode);
-    }
-    report_runtime(rc == 0 ? "ready" : "failed");
-}
-
-static void *plugin_poll_thread(void *arg)
-{
-    (void)arg;
     for (int i = 0; i < 300; i++) { /* up to 60 s */
         void *b = find_phoenix();
         if (b) {
             on_plugin_found(b);
-            return NULL;
+            return nullptr;
         }
         usleep(200 * 1000);
     }
-    append_log("P2 plugin poll: not found after 60s");
+    append_log("plugin poll: not found after 60s");
     report_runtime("failed");
-    return NULL;
+    return nullptr;
 }
 
-__attribute__((constructor)) static void picoet_init(void)
+__attribute__((constructor)) void picoet_init(void)
 {
     static volatile int once = 0;
     if (once)
@@ -1052,9 +1316,8 @@ __attribute__((constructor)) static void picoet_init(void)
 
     picoet_hook_marker = 0x5049434F45543150ULL; /* "PICOET1P" */
     g_start_ticks = process_start_ticks();
-    g_eye_mode = read_eye_mode();
+    g_enhanced_mode = read_enhanced_mode();
     g_gate_requested = read_gate_enabled();
-    picoet_eye_mode = (unsigned long long)g_eye_mode;
     if (publish_runtime("initializing") != 0) {
         append_log("runtime state unavailable; refusing all hooks (prepare picoet-runtime directory)");
         return;
@@ -1067,25 +1330,26 @@ __attribute__((constructor)) static void picoet_init(void)
         report_runtime("failed");
         return;
     }
-    if (g_eye_mode == 0) {
+    if (!g_enhanced_mode) {
         report_runtime("ready");
         return;
     }
     report_runtime("pending");
 
-    // P2/P3/P4: find the plugin, then either install the dual hooks (mode
-    // "dual") or the Hook A dry-run plus the left/right eye-mode patch.
+    // Expression independence: find the plugin, then install the full hook set.
     void *b = find_phoenix();
     if (b) {
         on_plugin_found(b);
     } else {
-        append_log("P2: plugin not loaded yet; starting poll thread");
+        append_log("plugin not loaded yet; starting poll thread");
         pthread_t t;
         if (pthread_create(&t, NULL, plugin_poll_thread, NULL) == 0)
             pthread_detach(t);
         else {
-            append_log("P2: poll thread creation failed");
+            append_log("plugin poll thread creation failed");
             report_runtime("failed");
         }
     }
 }
+
+} // namespace

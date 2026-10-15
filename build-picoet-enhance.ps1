@@ -31,6 +31,10 @@ foreach ($name in $scripts) {
     $p = Join-Path $moduleDir $name
     if (-not (Test-Path -LiteralPath $p)) { throw "Missing required module file: $p" }
 }
+$notices = @('LICENSE', 'THIRD_PARTY_NOTICES.md')
+foreach ($name in $notices) {
+    if (-not (Test-Path -LiteralPath (Join-Path $root $name))) { throw "Missing release notice: $name" }
+}
 
 $injector = Join-Path $HookDir 'build\picoet-inject'
 $payload = Join-Path $HookDir 'build\libpicoet_hook.so'
@@ -56,6 +60,10 @@ New-Item -ItemType Directory -Force -Path (Join-Path $stage 'bin'), (Join-Path $
 try {
     foreach ($name in $scripts) {
         $text = [IO.File]::ReadAllText((Join-Path $moduleDir $name)) -replace "`r`n", "`n"
+        [IO.File]::WriteAllText((Join-Path $stage $name), $text, [Text.UTF8Encoding]::new($false))
+    }
+    foreach ($name in $notices) {
+        $text = [IO.File]::ReadAllText((Join-Path $root $name)) -replace "`r`n", "`n"
         [IO.File]::WriteAllText((Join-Path $stage $name), $text, [Text.UTF8Encoding]::new($false))
     }
     Copy-Item -LiteralPath $injector -Destination (Join-Path $stage 'bin\picoet-inject')

@@ -1,6 +1,6 @@
 #requires -Version 5.1
 # Build all hook artifacts with the Android NDK + CMake/Ninja.
-#   libpicoet_hook.so : payload (ShadowHook static + gate + plugin + eye-mode)
+#   libpicoet_hook.so : payload (ShadowHook static + gate + per-eye independent expressions)
 #   picoet-inject     : arm64 ptrace injector
 #   picoet-target     : benign control target (libdl + pause)
 # No PICO binary is used or produced here.
@@ -89,42 +89,32 @@ if ($payDyn -notmatch 'liblog\.so') { throw 'payload does not link liblog.so (Sh
 
 $syms = & $readelf --dyn-syms $payload | Out-String
 foreach ($s in @('picoet_hook_marker', 'picoet_gate_calls', 'picoet_gate_installed',
-                 'picoet_plugin_base', 'picoet_hooka_calls', 'picoet_hooka_installed',
-                 'picoet_eye_mode_patched', 'picoet_eye_mode',
-                 'picoet_g', 'picoet_dual_installed', 'picoet_dual_leaf_installed')) {
+                 'picoet_plugin_base', 'picoet_dual_installed')) {
     if ($syms -notmatch $s) { throw "payload does not export $s" }
 }
 $all = & $readelf -s $payload | Out-String
 if ($all -notmatch 'shadowhook_init') { throw 'payload does not contain ShadowHook (static link failed)' }
-if ($all -notmatch 'infer_proxy') { throw 'payload has no Hook A proxy (P4)' }
-if ($all -notmatch 'picoet_leaf_start') { throw 'payload has no Hook B leaf template (P4)' }
 
-# --- P4 shape checks: leaf template layout + Hook A proxy frame pointer --------
-$nmOut = & $nm $payload | Out-String
-function Get-NmAddr([string]$name) {
-    $m = [regex]::Match($nmOut, "(?m)^([0-9a-fA-F]+)\s+\S+\s+" + [regex]::Escape($name) + "\r?$")
-    if (-not $m.Success) { throw "payload has no symbol $name" }
-    return [Convert]::ToInt64($m.Groups[1].Value, 16)
+# No digest-based Build ID anywhere: all targets link with --build-id=none.
+foreach ($f in @($payload, $injector, $ctl)) {
+    $notes = & $readelf -n $f | Out-String
+    if ($notes -match 'Build ID:') { throw "$f contains a GNU Build ID" }
 }
-$leafStart = Get-NmAddr 'picoet_leaf_start'
-$leafEnd = Get-NmAddr 'picoet_leaf_end'
-$leafRet = Get-NmAddr 'picoet_leaf_ret_pc'
-$leafG = Get-NmAddr 'picoet_leaf_apply_slot'
-$leafLen = $leafEnd - $leafStart
-if ($leafLen -le 0 -or $leafLen -gt 512) { throw "leaf size $leafLen B out of range (1..512)" }
-$retOff = $leafRet - $leafStart
-$gOff = $leafG - $leafStart
-if ($retOff -lt 0 -or $retOff + 4 -gt $leafLen) { throw "leaf return slot at $retOff out of range" }
-if ($gOff -lt 0 -or $gOff + 8 -gt $leafLen -or ($gOff % 8) -ne 0) { throw "leaf G slot at $gOff out of range/misaligned" }
-$proxyAddr = Get-NmAddr 'infer_proxy'
-$proxyDis = & $objdump -d ("--start-address=0x{0:x}" -f $proxyAddr) ("--stop-address=0x{0:x}" -f ($proxyAddr + 0x40)) $payload | Out-String
-if ($proxyDis -notmatch 'stp\s+x29, x30' -or $proxyDis -notmatch 'add\s+x29, sp') {
-    throw 'infer_proxy has no frame-pointer prologue (-fno-omit-frame-pointer missing?)'
+if ($payDyn -match 'libc\+\+_shared\.so') { throw 'payload links libc++_shared (static C++ runtime link failed)' }
+
+# --- payload shape check: merge_proxy keeps a frame pointer -------------------
+$nmOut = & $nm --demangle $payload | Out-String
+$m = [regex]::Match($nmOut, '(?m)^([0-9a-fA-F]+)\s+\S+\s+.*\bmerge_proxy\(void const\*,\s*void const\*,\s*void\*\)')
+if (-not $m.Success) { throw 'payload has no merge_proxy symbol' }
+$mergeAddr = [Convert]::ToInt64($m.Groups[1].Value, 16)
+$mergeDis = & $objdump -d ("--start-address=0x{0:x}" -f $mergeAddr) ("--stop-address=0x{0:x}" -f ($mergeAddr + 0x40)) $payload | Out-String
+if ($mergeDis -notmatch 'stp\s+x29, x30' -or $mergeDis -notmatch '(mov|add)\s+x29, sp') {
+    throw 'merge_proxy has no frame-pointer prologue (-fno-omit-frame-pointer missing?)'
 }
 
 Write-Host '--- shape checks ---'
 Write-Host '  injector : AArch64 PIE, NEEDED libdl.so                      OK'
-Write-Host '  payload  : AArch64 DYN, INIT_ARRAY, ShadowHook, exports      OK'
-Write-Host '  payload  : P4 leaf layout + proxy frame pointer              OK'
+Write-Host '  payload  : DYN, INIT_ARRAY, ShadowHook, no Build ID, exports  OK'
+Write-Host '  payload  : static C++ runtime + merge_proxy frame pointer     OK'
 Write-Host '  control  : AArch64 PIE, NEEDED libdl.so                      OK'
 Write-Host "[+] done: $BuildDir"
