@@ -44,11 +44,11 @@ PicoFacialBridge 读取本模块公布的临时模式属性，自动告知 PC �
 | 官方原版 | 约 61–78 Hz |
 | 打补丁，4 ms 等待 | 约 87–88 Hz |
 
-官方宿主的 10 ms 等待受 Windows 定时器精度影响，实际会在 10 到 15 ms 之间，所以每次测量的结果都有起伏。补丁缩短了等待，这种起伏的影响随之变小。
+Windows 11 可能会忽略官方宿主申请的 1 ms 定时器精度，这时每次 10 ms 等待实际要 15 ms 左右，所以官方原版每次测量的结果都有起伏。
 
 以上数据来自 Ryzen 7 9700X、RTX 4070 Ti SUPER、64 GB 内存、Windows 11 专业工作站版，电源计划为卓越性能。其他电脑的结果可能不同。
 
-官方 VRCFaceTracking 搭配本模块可以正常使用。如果希望 OSC 接近 90 Hz，请使用把宿主两处固定等待改为可设置项（默认 4 ms）的补丁。补丁以独立仓库发布，不分发 VRCFaceTracking 的二进制文件。
+官方 VRCFaceTracking 搭配本模块可以正常使用。如果希望 OSC 接近 90 Hz，请使用 [osc90-host-patch](https://github.com/WolalaQAQ/osc90-host-patch)。它让宿主和模块进程不被 Windows 忽略定时器精度，把两处固定等待改为可设置项（默认 4 ms），并修正了宿主里几处没有同步的数据交换（等待缩短后它们更容易互相干扰）。这是源码补丁，需要自己构建，并放在一份独立的 VRCFaceTracking 副本里运行；不分发 VRCFaceTracking 的二进制文件。
 ## 环境要求
 
 | 项目 | 要求 |

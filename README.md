@@ -44,11 +44,11 @@ The eye path delivers about 90 Hz to the PC, but the official VRCFaceTracking ho
 | Official, unmodified | about 61–78 Hz |
 | Patched, 4 ms waits | about 87–88 Hz |
 
-The official host's 10 ms waits are subject to Windows timer precision, so in practice they last between 10 and 15 ms and the result changes from run to run. The patch shortens the waits, which leaves much less room for that variation.
+Windows 11 may ignore the 1 ms timer resolution the official host asks for. When it does, each 10 ms wait takes about 15 ms, which is why the official result varies from run to run.
 
 These figures came from a Ryzen 7 9700X, RTX 4070 Ti SUPER, 64 GB RAM and Windows 11 Pro for Workstations on the Ultimate Performance power plan. Other PCs may see different numbers.
 
-The module works with the official VRCFaceTracking as is. If you want OSC close to 90 Hz, use the patch that turns the host's two fixed waits into settings (4 ms by default). It is published as a separate patch repository and does not redistribute VRCFaceTracking binaries.
+The module works with the official VRCFaceTracking as is. If you want OSC close to 90 Hz, use [osc90-host-patch](https://github.com/WolalaQAQ/osc90-host-patch). It has the host and module processes keep Windows from ignoring their timer resolution, turns the two fixed waits into settings (4 ms by default), and fixes a few unsynchronized data exchanges in the host that shorter waits make more likely to collide. It is a source patch: you build it yourself and run it from a separate copy of VRCFaceTracking. No VRCFaceTracking binaries are redistributed.
 ## Requirements
 
 | Item | Requirement |
