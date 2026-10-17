@@ -19,7 +19,7 @@
 - `X` v2 路径需要 PicoFacialBridge 0.5.0 及以上与 UnifiedPicoModule 0.4.0 及以上；此前的 0.4.0／0.3.0 组合仅支持 `X` v1 路径。
 - 保留 P1、开机加载、模式切换、暗图接纳、参考保护、本眼规则、滤波和量化。发生部分推进失败的 owner 会封存，直至正常生命周期重建。
 - 已在 PICO 4 Pro 上，搭配 PicoFacialBridge 0.5.0、UnifiedPicoModule 0.4.0 与官方 VRCFT 5.4.5，完成一次 84 秒的真人佩戴 Virtual Desktop 验证（Cymple 嘴部加 PICO 眼部）：每秒约 89.7 个 `X` 包到达 PC，每个包都带新的眼部源；仅 PICO 的眼部加面部也运行正常。这是短时验证，不是长时间稳定性测试。
-- 在测试用 PC 上，官方 VRCFT 宿主把这路数据交给 OSC 时约为 61–78 Hz。可选的 [osc90-host-patch](https://github.com/WolalaQAQ/osc90-host-patch) 可将其提高到约 87–88 Hz，详见 README。
+- 在测试用 PC 上，官方 VRCFT 宿主把这路数据交给 OSC 时约为 61–78 Hz。可选的 [VRCFT-Enhance](https://github.com/WolalaQAQ/VRCFT-Enhance) 可将其提高到约 87–88 Hz，详见 README。
 
 ## [2.2.0] - 2026-10-15
 

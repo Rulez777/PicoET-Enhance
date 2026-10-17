@@ -19,7 +19,7 @@ English | [简体中文](CHANGELOG_zh.md)
 - Requires PicoFacialBridge 0.5.0 or later and UnifiedPicoModule 0.4.0 or later for the `X` v2 path; the earlier 0.4.0 / 0.3.0 pair supports the `X` v1 path only.
 - Keep P1, boot loading, mode switching, dark-image admission, reference protection, within-eye rules, filtering and quantization. A partially failed owner remains sealed until normal lifecycle reconstruction.
 - Validated on a PICO 4 Pro with PicoFacialBridge 0.5.0, UnifiedPicoModule 0.4.0 and official VRCFT 5.4.5 in an 84-second worn Virtual Desktop session with Cymple mouth tracking and PICO eyes: about 89.7 `X` packets per second reached the PC, each with a new eye source. PICO eyes with face tracking also ran normally. This was a short session, not a long-duration stability test.
-- The official VRCFT host passes this stream to OSC at roughly 61–78 Hz on the test PC. The optional [osc90-host-patch](https://github.com/WolalaQAQ/osc90-host-patch) raises it to about 87–88 Hz; see the README.
+- The official VRCFT host passes this stream to OSC at roughly 61–78 Hz on the test PC. The optional [VRCFT-Enhance](https://github.com/WolalaQAQ/VRCFT-Enhance) raises it to about 87–88 Hz; see the README.
 
 ## [2.2.0] - 2026-10-15
 

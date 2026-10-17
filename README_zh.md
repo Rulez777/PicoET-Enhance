@@ -49,7 +49,7 @@ Windows 11 可能会忽略官方宿主申请的 1 ms 定时器精度，这时每
 
 以上数据来自 Ryzen 7 9700X、RTX 4070 Ti SUPER、64 GB 内存、Windows 11 专业工作站版，电源计划为卓越性能。其他电脑的结果可能不同。
 
-官方 VRCFaceTracking 搭配本模块可以正常使用。如果希望 OSC 接近 90 Hz，请使用 [osc90-host-patch](https://github.com/WolalaQAQ/osc90-host-patch)。它让宿主和模块进程不被 Windows 忽略定时器精度，把两处固定等待改为可设置项（默认 4 ms），并修正了宿主里几处没有同步的数据交换（等待缩短后它们更容易互相干扰）。这是源码补丁，需要自己构建，并放在一份独立的 VRCFaceTracking 副本里运行；不分发 VRCFaceTracking 的二进制文件。
+官方 VRCFaceTracking 搭配本模块可以正常使用。如果希望 OSC 接近 90 Hz，请使用 [VRCFT-Enhance](https://github.com/WolalaQAQ/VRCFT-Enhance)。它让宿主和模块进程不被 Windows 忽略定时器精度，把两处固定等待改为可设置项（默认 4 ms），并修正了宿主里几处没有同步的数据交换（等待缩短后它们更容易互相干扰）。这是源码补丁，需要自己构建，并放在一份独立的 VRCFaceTracking 副本里运行；不分发 VRCFaceTracking 的二进制文件。
 
 ## 环境要求
 
