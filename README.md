@@ -2,18 +2,19 @@
 
 English | [简体中文](README_zh.md)
 
-An eye-tracking enhancement Magisk module for the PICO 4 Pro: it opens the eye-tracking service's per-eye gate for real pupil data and decouples the facial expression model so each eye is processed on its own, for use with [PicoFacialBridge](https://github.com/WolalaQAQ/PicoFacialBridge) and [UnifiedPicoModule](https://github.com/WolalaQAQ/UnifiedPicoModule).
+An eye-tracking enhancement Magisk module for the PICO 4 Pro: it opens the eye-tracking service's per-eye gate for real pupil data, decouples the facial expression model so each eye is processed on its own, and runs eye expressions at the camera's 90 Hz instead of the stock rate of about 24 Hz. Use it with [PicoFacialBridge](https://github.com/WolalaQAQ/PicoFacialBridge) and [UnifiedPicoModule](https://github.com/WolalaQAQ/UnifiedPicoModule).
 
 > v2.3.0 · PICO 4 Pro / PICO OS 5.13.7 · [Changelog](CHANGELOG.md)
 
 ## What it does
 
-The PICO 4 Pro firmware tracks each eye, but its facial expression model mixes the two eyes before output: blink, look direction, wideness and brows for one eye depend on the other eye's inputs. This module corrects that at runtime in two ways:
+The PICO 4 Pro firmware tracks each eye, but its facial expression model mixes the two eyes before output, so blink, look direction, wideness and brows for one eye depend on the other eye's inputs. It also updates these expressions only about 24 times a second, although the eye cameras run at 90 Hz. This module changes three things at runtime:
 
-- it opens the per-eye gate inside the eye-tracking service, so real pupil diameter data is written to shared memory;
-- it removes the expression model's cross-eye coupling: EyeLook, Blink, Wide and the brow channels are computed and filtered per eye, each with its own quality window, reference image and history. The filtered right inner brow and the per-eye quality states are exported as an `EPI1` extension, which PicoFacialBridge forwards as `X` packets.
+- **Real pupil data**: it opens the per-eye gate inside the eye-tracking service, so real pupil diameter data is written to shared memory.
+- **Independent eyes**: it removes the expression model's cross-eye coupling. EyeLook, Blink, Wide and the brow channels are computed and filtered per eye, each with its own quality window, reference image and history. The filtered right inner brow and the per-eye quality states are exported as an `EPI1` extension, which PicoFacialBridge forwards as `X` packets.
+- **90 Hz eye expressions**: the complete eye-expression path runs on every new camera frame, so eye values reach the PC at about 90 Hz. In an 84-second worn session through Virtual Desktop, about 89.7 `X` packets per second arrived at the PC, each carrying a new eye source. The stock mouth chain stays at about 24 Hz, and eye and mouth inference run in parallel on the frames they share. To carry this rate all the way to VRChat, see [About 90 Hz OSC](#about-90-hz-osc).
 
-The complete eye-expression path runs on new camera inputs; the stock mouth chain runs at about 24 Hz, with eye and mouth inference in parallel on those frames. Eye smoothing uses each eye's source-time interval, and quality windows pause across missing frames. Repeated or backward source timestamps do not advance that eye's state.
+Eye smoothing uses each eye's source-time interval, and quality windows pause across missing frames. Repeated or backward source timestamps do not advance that eye's state.
 
 The combined gaze and the mouth algorithm stay stock. Each eye keeps blink endpoints, filtering and the within-eye inner/outer brow linkage. Dark-image admission, reference protection and model quantization remain enabled. On the PC, eye direction and eyelid openness use EyeLook and `1−Blink`; native eye data supplies measured pupil diameter only.
 
@@ -49,6 +50,7 @@ Windows 11 may ignore the 1 ms timer resolution the official host asks for. When
 These figures came from a Ryzen 7 9700X, RTX 4070 Ti SUPER, 64 GB RAM and Windows 11 Pro for Workstations on the Ultimate Performance power plan. Other PCs may see different numbers.
 
 The module works with the official VRCFaceTracking as is. If you want OSC close to 90 Hz, use [osc90-host-patch](https://github.com/WolalaQAQ/osc90-host-patch). It has the host and module processes keep Windows from ignoring their timer resolution, turns the two fixed waits into settings (4 ms by default), and fixes a few unsynchronized data exchanges in the host that shorter waits make more likely to collide. It is a source patch: you build it yourself and run it from a separate copy of VRCFaceTracking. No VRCFaceTracking binaries are redistributed.
+
 ## Requirements
 
 | Item | Requirement |

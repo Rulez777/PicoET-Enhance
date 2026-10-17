@@ -2,18 +2,19 @@
 
 [English](README.md) | 简体中文
 
-面向 PICO 4 Pro 的眼动增强 Magisk 模块：打开眼动服务的逐眼门控以输出真实瞳孔数据，并解除面部表情模型的跨眼耦合，让左右眼各自计算，配合 [PicoFacialBridge](https://github.com/WolalaQAQ/PicoFacialBridge) 和 [UnifiedPicoModule](https://github.com/WolalaQAQ/UnifiedPicoModule) 使用。
+面向 PICO 4 Pro 的眼动增强 Magisk 模块：打开眼动服务的逐眼门控以输出真实瞳孔数据，解除面部表情模型的跨眼耦合让左右眼各自计算，并把眼部表情从原厂的约 24 Hz 提高到相机的 90 Hz。配合 [PicoFacialBridge](https://github.com/WolalaQAQ/PicoFacialBridge) 和 [UnifiedPicoModule](https://github.com/WolalaQAQ/UnifiedPicoModule) 使用。
 
 > v2.3.0 · PICO 4 Pro / PICO OS 5.13.7 · [更新日志](CHANGELOG_zh.md)
 
 ## 它做什么
 
-PICO 4 Pro 的固件会对左右眼分别追踪，但面部表情模型在输出前把两眼混合：一侧的 Blink、视线方向、Wide 和眉部会受另一侧输入影响。本模块在运行期做两处修正：
+PICO 4 Pro 的固件会对左右眼分别追踪，但面部表情模型在输出前把两眼混合，一侧的 Blink、视线方向、Wide 和眉部会受另一侧输入影响。眼部相机以 90 Hz 运行，这些表情却每秒只更新约 24 次。本模块在运行期做三处改动：
 
-- 打开眼动服务内部的逐眼门控，使真实瞳孔直径数据写入共享内存；
-- 解除表情模型的跨眼耦合：EyeLook、Blink、Wide 和眉部通道逐眼独立计算与滤波，每眼维护自己的质量窗口、参考图和历史。滤波后的右内眉与逐眼质量状态通过 `EPI1` 扩展导出，由 PicoFacialBridge 以 `X` 包转发。
+- **真实瞳孔数据**：打开眼动服务内部的逐眼门控，使真实瞳孔直径数据写入共享内存。
+- **左右眼独立**：解除表情模型的跨眼耦合。EyeLook、Blink、Wide 和眉部通道逐眼独立计算与滤波，每眼维护自己的质量窗口、参考图和历史。滤波后的右内眉与逐眼质量状态通过 `EPI1` 扩展导出，由 PicoFacialBridge 以 `X` 包转发。
+- **90 Hz 眼部表情**：完整眼部表情在每个新相机帧上执行，眼部数值以约 90 Hz 送到 PC。在一次 84 秒的 Virtual Desktop 真人佩戴测试中，PC 每秒收到约 89.7 个 `X` 包，每个包都带新的眼部源。原厂嘴部链路仍约 24 Hz，在两者共用的帧上眼／嘴推理并行运行。要让这个频率一直传到 VRChat，见[关于 90 Hz OSC](#关于-90-hz-osc)。
 
-完整眼部表情随新相机输入执行，原厂嘴部慢链维持约 24 Hz，并在这些帧上并行运行眼／嘴推理。眼部平滑按本眼源时间间隔换算，质量窗口在缺帧期间暂停；重复或倒退源时间不推进本眼状态。
+眼部平滑按本眼源时间间隔换算，质量窗口在缺帧期间暂停；重复或倒退源时间不推进本眼状态。
 
 融合视线和嘴部算法保持原厂行为。每眼保留 Blink 端点、滤波及眼内 inner→outer 眉部联动；暗图接纳、参考保护和模型量化仍启用。PC 端眼球方向与眼睑开合使用 EyeLook 和 `1−Blink`，原生眼数据仅提供实测瞳孔直径。
 
@@ -49,6 +50,7 @@ Windows 11 可能会忽略官方宿主申请的 1 ms 定时器精度，这时每
 以上数据来自 Ryzen 7 9700X、RTX 4070 Ti SUPER、64 GB 内存、Windows 11 专业工作站版，电源计划为卓越性能。其他电脑的结果可能不同。
 
 官方 VRCFaceTracking 搭配本模块可以正常使用。如果希望 OSC 接近 90 Hz，请使用 [osc90-host-patch](https://github.com/WolalaQAQ/osc90-host-patch)。它让宿主和模块进程不被 Windows 忽略定时器精度，把两处固定等待改为可设置项（默认 4 ms），并修正了宿主里几处没有同步的数据交换（等待缩短后它们更容易互相干扰）。这是源码补丁，需要自己构建，并放在一份独立的 VRCFaceTracking 副本里运行；不分发 VRCFaceTracking 的二进制文件。
+
 ## 环境要求
 
 | 项目 | 要求 |
