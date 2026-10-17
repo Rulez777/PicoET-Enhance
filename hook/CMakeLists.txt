@@ -1,12 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 project(picoet_hook C CXX ASM)
 
-# The fixed NDK adds a digest-based Build ID to both link command types.
-foreach(link_flags CMAKE_SHARED_LINKER_FLAGS CMAKE_EXE_LINKER_FLAGS)
-    string(REPLACE "-Wl,--build-id=sha1" "-Wl,--build-id=none"
-        ${link_flags} "${${link_flags}}")
-endforeach()
-
 # ---- ShadowHook 2.0.1 (vendored source, static-in-object form) --------------
 # Vendored upstream source (see third_party/shadowhook-2.0.1/VENDOR.txt). The
 # Local integration patches are documented in VENDOR.txt: no linker monitor
@@ -37,12 +31,17 @@ target_include_directories(shadowhook_obj PRIVATE
     PUBLIC ${SH_DIR}/include)
 
 # ---- our payload object (placed after ShadowHook for ctor ordering) ---------
-# Compiled as C++17: the expression-independence path reuses the verified r4
-# numerical/state code and needs exceptions. -fno-omit-frame-pointer is
+# Compiled as C++17: the high-rate path reuses the verified source-dt and
+# effective-observation-time code and needs exceptions. -fno-omit-frame-pointer is
 # required because merge_proxy reads its caller via __builtin_return_address;
 # -ffp-contract=off keeps the reconstructed stock arithmetic exact.
 set_source_files_properties(src/picoet_hook.c PROPERTIES LANGUAGE CXX)
-add_library(picoet_obj OBJECT src/picoet_hook.c)
+add_library(picoet_obj OBJECT
+    src/picoet_hook.c
+    src/expression/high_rate.cpp
+    src/expression/integration.cpp
+    src/expression/numerical.cpp
+    src/expression/state.cpp)
 set_target_properties(picoet_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_options(picoet_obj PRIVATE
     -std=c++17 -O2 -fPIC -fexceptions -fvisibility=hidden -Wall -Wextra

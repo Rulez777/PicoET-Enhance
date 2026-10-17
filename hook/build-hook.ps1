@@ -1,6 +1,6 @@
 #requires -Version 5.1
 # Build all hook artifacts with the Android NDK + CMake/Ninja.
-#   libpicoet_hook.so : payload (ShadowHook static + gate + per-eye independent expressions)
+#   libpicoet_hook.so : payload (ShadowHook static + gate + high-rate per-eye expressions)
 #   picoet-inject     : arm64 ptrace injector
 #   picoet-target     : benign control target (libdl + pause)
 # No PICO binary is used or produced here.
@@ -67,7 +67,7 @@ $ctl = Join-Path $BuildDir 'picoet-target'
 if ($LASTEXITCODE -ne 0) { throw 'failed to strip build-time debug information' }
 Get-Item $injector, $payload, $ctl | Format-Table Name, Length -AutoSize | Out-String | Write-Host
 
-# --- build-time shape assertions (not tests; fail the build on wrong output) ---
+# --- build-time structure checks ---
 function Assert-AArch64([string]$f, [string]$tag) {
     $h = & $readelf -h $f | Out-String
     if ($h -notmatch 'AArch64') { throw "$tag is not AArch64" }
@@ -95,11 +95,6 @@ foreach ($s in @('picoet_hook_marker', 'picoet_gate_calls', 'picoet_gate_install
 $all = & $readelf -s $payload | Out-String
 if ($all -notmatch 'shadowhook_init') { throw 'payload does not contain ShadowHook (static link failed)' }
 
-# No digest-based Build ID anywhere: all targets link with --build-id=none.
-foreach ($f in @($payload, $injector, $ctl)) {
-    $notes = & $readelf -n $f | Out-String
-    if ($notes -match 'Build ID:') { throw "$f contains a GNU Build ID" }
-}
 if ($payDyn -match 'libc\+\+_shared\.so') { throw 'payload links libc++_shared (static C++ runtime link failed)' }
 
 # --- payload shape check: merge_proxy keeps a frame pointer -------------------
@@ -114,7 +109,7 @@ if ($mergeDis -notmatch 'stp\s+x29, x30' -or $mergeDis -notmatch '(mov|add)\s+x2
 
 Write-Host '--- shape checks ---'
 Write-Host '  injector : AArch64 PIE, NEEDED libdl.so                      OK'
-Write-Host '  payload  : DYN, INIT_ARRAY, ShadowHook, no Build ID, exports  OK'
+Write-Host '  payload  : DYN, INIT_ARRAY, ShadowHook, exports  OK'
 Write-Host '  payload  : static C++ runtime + merge_proxy frame pointer     OK'
 Write-Host '  control  : AArch64 PIE, NEEDED libdl.so                      OK'
 Write-Host "[+] done: $BuildDir"
