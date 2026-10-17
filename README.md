@@ -49,7 +49,7 @@ Windows 11 may ignore the 1 ms timer resolution the official host asks for. When
 
 These figures came from a Ryzen 7 9700X, RTX 4070 Ti SUPER, 64 GB RAM and Windows 11 Pro for Workstations on the Ultimate Performance power plan. Other PCs may see different numbers.
 
-The module works with the official VRCFaceTracking as is. If you want OSC close to 90 Hz, use [VRCFT-Enhance](https://github.com/WolalaQAQ/VRCFT-Enhance). It has the host and module processes keep Windows from ignoring their timer resolution, turns the two fixed waits into settings (4 ms by default), and fixes a few unsynchronized data exchanges in the host that shorter waits make more likely to collide. It is a source patch: you build it yourself and run it from a separate copy of VRCFaceTracking. No VRCFaceTracking binaries are redistributed.
+The module works with the official VRCFaceTracking as is. If you want OSC close to 90 Hz, use [VRCFT-Enhance](https://github.com/WolalaQAQ/VRCFT-Enhance). It has the host and module processes keep Windows from ignoring their timer resolution, turns the two fixed waits into settings (4 ms by default), and fixes a few unsynchronized data exchanges in the host that shorter waits make more likely to collide. It runs from a separate copy of VRCFaceTracking; releases include the two patched DLLs, and the repository also keeps the source patch if you prefer to build them yourself.
 
 ## Requirements
 
