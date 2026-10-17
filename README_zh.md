@@ -4,7 +4,7 @@
 
 面向 PICO 4 Pro 的眼动增强 Magisk 模块：打开眼动服务的逐眼门控以输出真实瞳孔数据，并解除面部表情模型的跨眼耦合，让左右眼各自计算，配合 [PicoFacialBridge](https://github.com/WolalaQAQ/PicoFacialBridge) 和 [UnifiedPicoModule](https://github.com/WolalaQAQ/UnifiedPicoModule) 使用。
 
-> v2.2.0 · PICO 4 Pro / PICO OS 5.13.7 · [更新日志](CHANGELOG_zh.md)
+> v2.3.0 · PICO 4 Pro / PICO OS 5.13.7 · [更新日志](CHANGELOG_zh.md)
 
 ## 它做什么
 
@@ -13,7 +13,9 @@ PICO 4 Pro 的固件会对左右眼分别追踪，但面部表情模型在输出
 - 打开眼动服务内部的逐眼门控，使真实瞳孔直径数据写入共享内存；
 - 解除表情模型的跨眼耦合：EyeLook、Blink、Wide 和眉部通道逐眼独立计算与滤波，每眼维护自己的质量窗口、参考图和历史。滤波后的右内眉与逐眼质量状态通过 `EPI1` 扩展导出，由 PicoFacialBridge 以 `X` 包转发。
 
-嘴部处理与融合视线保持原样。每眼保留原有的本眼规则：Blink 端点、平滑，以及眼内 inner→outer 眉部联动。
+完整眼部表情随新相机输入执行，原厂嘴部慢链维持约 24 Hz，并在这些帧上并行运行眼／嘴推理。眼部平滑按本眼源时间间隔换算，质量窗口在缺帧期间暂停；重复或倒退源时间不推进本眼状态。
+
+融合视线和嘴部算法保持原厂行为。每眼保留 Blink 端点、滤波及眼内 inner→outer 眉部联动；暗图接纳、参考保护和模型量化仍启用。PC 端眼球方向与眼睑开合使用 EyeLook 和 `1−Blink`，原生眼数据仅提供实测瞳孔直径。
 
 增强通过运行期 hook 作用于眼动服务，随服务重启而卸载。
 
@@ -31,8 +33,22 @@ VRCFaceTracking → VRChat OSC
 
 PicoFacialBridge 读取本模块公布的临时模式属性，自动告知 PC 当前处于普通还是增强模式。
 
-逐眼独立表情需要头显端 PicoET-Enhance 2.2.0 及以上、PicoFacialBridge 0.4.0 及以上，以及 PC 端 UnifiedPicoModule 0.3.0 及以上。较旧的 Bridge（0.3 及以上）在普通模式下仍可使用，无需本模块。
+高频路径使用 `EPI1`／`X` v2，需要 PicoFacialBridge 0.5.0 及以上与 UnifiedPicoModule 0.4.0 及以上。此前的 PicoET-Enhance 2.2.0 搭配 PicoFacialBridge 0.4.0、UnifiedPicoModule 0.3.0，通过 v1 提供原厂表情节奏下的逐眼独立。较旧的 Bridge（0.3 及以上）在普通模式下仍可使用，无需本模块。
 
+### 关于 90 Hz OSC
+
+眼部路径送到 PC 的频率约为 90 Hz，但官方 VRCFaceTracking 宿主再把它交给 OSC 时会降频：宿主以固定的 10 ms 等待读取模块输出并写出 OSC。我们在 PICO 4 Pro 经 Virtual Desktop 串流的环境下，按原始 90 Hz 节奏回放 2,700 帧录制的眼部数据，统计 OSC 输出端每秒的新眼部方向数：
+
+| VRCFT 宿主（5.4.5，Steam 版 `7add148`） | 每秒新眼部方向 |
+|---|---:|
+| 官方原版 | 约 61–78 Hz |
+| 打补丁，4 ms 等待 | 约 87–88 Hz |
+
+官方宿主的 10 ms 等待受 Windows 定时器精度影响，实际会在 10 到 15 ms 之间，所以每次测量的结果都有起伏。补丁缩短了等待，这种起伏的影响随之变小。
+
+以上数据来自 Ryzen 7 9700X、RTX 4070 Ti SUPER、64 GB 内存、Windows 11 专业工作站版，电源计划为卓越性能。其他电脑的结果可能不同。
+
+官方 VRCFaceTracking 搭配本模块可以正常使用。如果希望 OSC 接近 90 Hz，请使用把宿主两处固定等待改为可设置项（默认 4 ms）的补丁。补丁以独立仓库发布，不分发 VRCFaceTracking 的二进制文件。
 ## 环境要求
 
 | 项目 | 要求 |
@@ -50,8 +66,8 @@ PicoFacialBridge 读取本模块公布的临时模式属性，自动告知 PC �
 2. 在 Magisk App 中通过“从本地安装”刷入，或使用命令行：
 
    ```sh
-   adb push magisk-picoet-enhance-v2.2.0.zip /data/local/tmp/
-   adb shell su -c 'magisk --install-module /data/local/tmp/magisk-picoet-enhance-v2.2.0.zip'
+   adb push magisk-picoet-enhance-v2.3.0.zip /data/local/tmp/
+   adb shell su -c 'magisk --install-module /data/local/tmp/magisk-picoet-enhance-v2.3.0.zip'
    ```
 
 3. 重启头显。
@@ -86,7 +102,7 @@ sh /data/adb/modules/picoet-enhance/picoet.sh toggle
 
 ## 兼容性与验证情况
 
-逐眼表情路径已在 PICO 4 Pro / PICO OS 5.13.7 上完成验证：录制输入可复现独立输出，与原厂基线在全部非眼槽和嘴有效位上一致。端到端方面，事先录制的眼图在头显上经原生眼部推理回放，经 PicoFacialBridge 0.4.0 与 UnifiedPicoModule 0.3.0 到达官方 VRCFT 5.4.5，收到的 `E`、`X` 数值与源输出一致。录制约为 23.7 Hz 并以加速循环回放，因此验证的是推理吞吐与传输，不是真实 90 Hz 相机序列。
+高频路径已在 PICO 4 Pro / PICO OS 5.13.7、PicoFacialBridge 0.5.0、UnifiedPicoModule 0.4.0 与官方 VRCFT 5.4.5 上完成验证。一次 84 秒的真人佩戴验证经 Virtual Desktop 串流，使用 Cymple 嘴部加 PICO 眼部，Bridge 每秒向 PC 发出约 89.7 个 `X` 包，每个包都带新的眼部源；仅 PICO 的眼部加面部（不开 Cymple）也运行正常。此前的录制输入测试覆盖了推理吞吐与传输。
 
 尚未覆盖：单眼质量失效、分时参考重建、嘴部输出的真机对照，以及长时间实机相机使用。嘴部共享处理与融合视线保持原样；当前 Avatar 使用的宿主侧眉部参数仍对两侧取平均，尽管扩展会同时携带两侧数值。
 
@@ -111,6 +127,7 @@ pwsh -File build-picoet-enhance.ps1            # 打包成 Magisk zip
 
 - [ ] **舌头方向增强**：PICO 目前只对外提供伸舌量 `TongueOut` 一个标量，而 VRCFaceTracking 已定义了 `TongueLeft/Right/Up/Down` 等方向通道。计划先取下脸相机的原始帧，用视觉分割基模自动打标，再训练一个小模型，并允许用户采集自己的数据在本地做在线微调。
 - [ ] **面捕不滤波输出**：把端侧 FaceTrackor 的时间平滑做成可选关闭，让模块直接转发逐帧原始面部数据。时间滤波改由 PC 端按需处理，端侧只负责发原始值。
+- [ ] **眼追与面捕同步 90 Hz**：眼部表情已按相机速率运行，嘴部原厂链路仍约 24 Hz。目标是把面部模型也提到同一速率，使眼和嘴的数值一起以 90 Hz 到达 PC 并输出为 OSC；串流期间两个模型需共用头显的算力预算。
 
 ## 反馈
 

@@ -11,9 +11,16 @@ Selecting normal mode keeps enhancement disabled across subsequent reboots.
 Enhanced mode opens the service-local pupil gate and decouples the expression model:
 each eye's EyeLook, Blink, Wide and brow values are computed and filtered on their own,
 and the right inner brow plus the per-eye quality states are exported as the `EPI1`
-extension. PicoFacialBridge forwards them as `X` packets; the stock mouth processing and
-combined gaze stay unchanged. Use PicoFacialBridge 0.4.0 or later, and UnifiedPicoModule
-0.3.0 or later on the PC.
+v2 extension. PicoFacialBridge forwards it as `X` v2 packets with separate left-eye,
+right-eye and mouth source identities. Use matching Bridge and UnifiedPicoModule
+builds with v2 support; the released 0.4.0 / 0.3.0 pair supports v1 only.
+
+The full eye-expression path runs on fresh inputs while the stock mouth chain stays
+at about 24 Hz, with same-frame eye/mouth inference in parallel. Each eye's filtering
+uses its source-time interval; missing frames pause its quality window. Dark-image
+admission, reference protection, quantization and combined native gaze remain stock.
+PC eye direction and eyelid openness use EyeLook and `1−Blink`; native eye data is
+used only for measured pupil diameter.
 
 ## Mode controls
 
