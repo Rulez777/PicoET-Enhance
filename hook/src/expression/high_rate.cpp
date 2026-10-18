@@ -1,4 +1,4 @@
-// Verified full-eye fast path and same-frame stock mouth worker, without replay/profiling.
+// Source-clock dual-rate dispatch and same-frame stock mouth worker, without profiling.
 #include "high_rate.h"
 #include "integration.h"
 
@@ -15,6 +15,16 @@ namespace {
 static_assert(sizeof(Mat) == 0x60 && sizeof(Vector) == 24 && sizeof(Output) == 0xd8 &&
               sizeof(Array) == 24, "stock AAPCS64 POD/Mat/Array ABI");
 constexpr uint64_t slow_period = 41666667;
+RateConfig configured_rates;
+uint64_t period_ns(uint32_t hz) {
+    return hz == 24 ? slow_period : (1000000000ULL + hz - 1) / hz;
+}
+// Consume only the latest due slot: a source gap never creates catch-up work.
+uint64_t consume_slot(uint64_t stamp, uint64_t period, uint64_t& next) {
+    const uint64_t slot = next ? next + ((stamp - next) / period) * period : stamp;
+    next = slot + period;
+    return slot;
+}
 Trackor stock_trackor;
 Infer observed_infer, stock_infer;
 Resize resize_image;
@@ -61,10 +71,11 @@ struct FloatVector {
     ~FloatVector() { release(value.begin); }
 };
 struct OwnerState {
-    uint64_t next_slow = 0, mouth_source = 0;
+    uint64_t next_eye = 0, next_slow = 0, mouth_source = 0;
+    uint64_t eye_sources[2] {};
     uint64_t full_sources[3] {};
-    bool cached = false, has_full_sources = false, blocked = false;
-    Output slow_output {};
+    bool cached = false, has_eye_sources = false, has_full_sources = false, blocked = false;
+    Output held_output {};
 };
 std::mutex& owners_lock() { static std::mutex value; return value; }
 auto& owners() {
@@ -203,6 +214,16 @@ bool finite_output(const Output& output) {
 }
 }
 
+RateConfig configure_rates(uint32_t eye_hz, uint32_t mouth_hz) {
+    configured_rates.requested_eye_hz = eye_hz;
+    configured_rates.requested_mouth_hz = mouth_hz;
+    eye_hz = eye_hz ? eye_hz : 90;
+    mouth_hz = mouth_hz ? mouth_hz : 90;
+    configured_rates.eye_hz = eye_hz > 90 ? 90 : eye_hz;
+    configured_rates.mouth_hz = mouth_hz > configured_rates.eye_hz
+        ? configured_rates.eye_hz : mouth_hz;
+    return configured_rates;
+}
 void configure(uintptr_t base, Trackor stock, Infer observed, Infer native, Resize resize) {
     stock_trackor = stock;
     observed_infer = observed;
@@ -233,31 +254,57 @@ Output dispatch(void* owner, const Mat* eye0, const Mat* eye1, const Mat* mouth,
     std::memcpy(current.sources, sources, sizeof(current.sources));
     FrameGuard guard(*state);
     const uint64_t phase_stamp = sources[0] > sources[1] ? sources[0] : sources[1];
+    const bool eyes_fresh = !state->has_eye_sources ||
+        (sources[0] > state->eye_sources[0] || sources[1] > state->eye_sources[1]);
+    const bool eye_due = configured_rates.eye_hz == 90 || !state->next_eye ||
+        phase_stamp >= state->next_eye;
+    const bool attempted = !state->blocked && eyes_fresh && eye_due;
+    current.info.skipped = !state->blocked && !attempted;
+    // At 90, every fresh source is admitted, including slightly faster-than-90
+    // cameras. Lower rates use fixed source-clock slots, not completion time.
+    uint64_t eye_slot = phase_stamp;
+    if (attempted && configured_rates.eye_hz != 90)
+        eye_slot = consume_slot(phase_stamp, period_ns(configured_rates.eye_hz), state->next_eye);
     bool full_fresh = !state->has_full_sources;
     if (state->has_full_sources) full_fresh = sources[0] > state->full_sources[0] &&
         sources[1] > state->full_sources[1] && sources[2] > state->full_sources[2];
-    const bool slow_due = !state->cached || !state->next_slow || phase_stamp >= state->next_slow;
-    current.info.slow = !state->blocked && full_fresh && slow_due;
-    if (current.info.slow && (!state->next_slow || phase_stamp >= state->next_slow)) {
-        if (!state->next_slow) state->next_slow = phase_stamp + slow_period;
-        else state->next_slow += ((phase_stamp - state->next_slow) / slow_period + 1) * slow_period;
-    }
+    // Mouth deadlines are evaluated on the admitted eye's logical slot. Because
+    // mouth <= eye, consecutive eye slots cannot skip a mouth deadline. This
+    // preserves the target ratio without adding eye work on a skipped source;
+    // source gaps still coalesce elapsed slots instead of creating catch-up work.
+    // With eye=90, eye_slot is the real source stamp, preserving the old 24Hz
+    // phase exactly. Mouth=90 bypasses phase gating altogether.
+    const bool slow_due = configured_rates.mouth_hz == 90 || !state->cached ||
+        !state->next_slow || eye_slot >= state->next_slow;
+    current.info.slow = attempted && full_fresh && slow_due;
+    if (current.info.slow && configured_rates.mouth_hz != 90)
+        consume_slot(eye_slot, period_ns(configured_rates.mouth_hz), state->next_slow);
     expression_independent::FrameTiming timing;
     std::memcpy(timing.source_ns, sources, sizeof(timing.source_ns));
     timing.slow = current.info.slow;
-    timing.attempted = !state->blocked;
+    timing.attempted = attempted;
+    timing.skipped = current.info.skipped;
     if (!timing.slow) timing.source_ns[2] = state->mouth_source;
     expression_independent::begin_frame(owner, timing);
-    Output output {};
+    Output output = state->held_output;
+    if (timing.skipped) {
+        output.values[52] = output.values[53] = 0.f;
+        // integration's skipped path exports held52 and mask=0 without
+        // advancing any filters, references, quality windows or source history.
+        expression_independent::end_frame(output.values);
+        current.info.completed = expression_independent::frame_applied();
+        guard.returned = true;
+        return output;
+    }
     bool body_returned = false;
     try {
         if (state->blocked) {
+            output = {};
             current.info.owner_blocked = true;
         } else if (timing.slow) {
             output = stock_trackor(owner, eye0, eye1, mouth);
             body_returned = true;
         } else {
-            output = state->slow_output;
             output.values[53] = 0.f; // Held mouth coefficients are not a new observation.
             eye_only(owner, eye0, eye1);
             current.info.eye_only_completed = true;
@@ -273,7 +320,7 @@ Output dispatch(void* owner, const Mat* eye0, const Mat* eye1, const Mat* mouth,
     current.info.eye_completed = current.eye_valid && (timing.slow || body_returned);
     expression_independent::observe_eye_only_completion(current.info.eye_completed);
     if (timing.slow && !full_completed) {
-        output = state->cached ? state->slow_output : Output {};
+        output = state->held_output;
         output.values[53] = 0.f;
         expression_independent::observe_completion(false);
     }
@@ -285,8 +332,14 @@ Output dispatch(void* owner, const Mat* eye0, const Mat* eye1, const Mat* mouth,
     current.info.completed = expression_independent::frame_applied() && current.eye_valid &&
         (timing.slow ? full_completed : body_returned && current.info.eye_only_completed) &&
         finite_output(output);
+    if (current.info.completed) {
+        state->held_output = output;
+        for (unsigned eye = 0; eye < 2; ++eye)
+            if (!state->has_eye_sources || sources[eye] > state->eye_sources[eye])
+                state->eye_sources[eye] = sources[eye];
+        state->has_eye_sources = true;
+    }
     if (current.info.completed && timing.slow) {
-        state->slow_output = output;
         state->cached = true;
         state->mouth_source = sources[2];
         std::memcpy(state->full_sources, sources, sizeof(state->full_sources));

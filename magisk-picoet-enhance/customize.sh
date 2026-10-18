@@ -33,8 +33,17 @@ case "$(cat /data/local/tmp/picoet-mode 2>/dev/null)" in
         echo on > /data/local/tmp/picoet-gate || abort "! Cannot save enhanced gate" ;;
 esac
 
+# Only the first upgrade from before 2.4.0 resets development-era overrides.
+# Reinstalls and later upgrades keep settings chosen through the new interface.
+installed_version_code=$(sed -n 's/^versionCode=//p' /data/adb/modules/picoet-enhance/module.prop 2>/dev/null)
+if [ "${installed_version_code:-0}" -lt 18 ]; then
+    rm -f /data/local/tmp/picoet-eye-hz /data/local/tmp/picoet-mouth-hz || abort "! Cannot reset expression rate overrides"
+    ui_print "- First 2.4.0 migration: eye/mouth targets reset to 90/90 Hz."
+fi
+
 ui_print "- PicoET-Enhance (runtime ptrace injection; no PICO bytes, no system writes)"
 ui_print "- Fresh-install default: dual/on; upgrades keep off as off/off, otherwise use dual/on."
+ui_print "- Enhanced eye/mouth defaults: 90/90 Hz."
 ui_print "- Saved state: mode=$(cat /data/local/tmp/picoet-mode) gate=$(cat /data/local/tmp/picoet-gate)"
 ui_print "- ro.pxr.externalfunc is never touched."
 ui_print "- Switch (root, restarts eye/face tracking):"

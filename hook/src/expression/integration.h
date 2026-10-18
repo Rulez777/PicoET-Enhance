@@ -8,6 +8,7 @@ struct FrameTiming {
     uint64_t source_ns[3] {};
     bool slow = true;
     bool attempted = true;
+    bool skipped = false; // Explicit rate skip, not a failed observation.
 };
 // Hook ownership and installation stay in picoet_hook.c.
 void configure(uintptr_t base, Merge merge);

@@ -100,6 +100,28 @@ void clear_time_quality(QualityTimeWindow& window) {
     window.bad_ns = 0;
 }
 
+bool apply_mouth_reference_reset(MouthQualityCompatibility& legacy, uintptr_t base,
+                                void* owner, const int32_t classification[2]) {
+    if (classification[0] == 0 && classification[1] == 0) {
+        legacy.shared_reference_present = false;
+        return false;
+    }
+    if ((classification[0] == 1 || classification[1] == 1) && !legacy.shared_reference_present) {
+        // Stock 0x62bcc..0x62be0: this occurs AFTER the current mouth_valid.
+        store<int32_t>(owner, 0x118, 0);
+        using ClearQueue = void (*)(void*);
+        reinterpret_cast<ClearQueue>(base + 0x5e7a0)(static_cast<unsigned char*>(owner) + 0x180);
+        for (unsigned eye = 0; eye < 2; ++eye) {
+            legacy.eye_samples[eye].clear();
+            legacy.eye_good[eye] = 0;
+            clear_time_quality(legacy.eye_time[eye]);
+        }
+        legacy.shared_reference_present = true;
+        return true;
+    }
+    return false;
+}
+
 } // namespace
 
 void reset(State& state) {
@@ -257,25 +279,28 @@ bool preserve_mouth_quality_reset(State& state, uintptr_t base, void* owner,
         classification[eye] = advance_legacy_quality(legacy.eye_samples[eye], legacy.eye_good[eye],
                                                      window, threshold, raw24[20 + 2 * eye]);
     }
-    // Stock 0x62b70..0x62b8c: both 0 clears the legacy shared flag; otherwise
-    // only an explicit 1 with no existing reference triggers queue resets.
-    if (classification[0] == 0 && classification[1] == 0) {
-        legacy.shared_reference_present = false;
-        return false;
-    }
-    if ((classification[0] == 1 || classification[1] == 1) && !legacy.shared_reference_present) {
-        // 0x62bcc zeroes the mouth count, then 0x62be0 clears its stock deque.
-        store<int32_t>(owner, 0x118, 0);
-        using ClearQueue = void (*)(void*);
-        reinterpret_cast<ClearQueue>(base + 0x5e7a0)(static_cast<unsigned char*>(owner) + 0x180);
-        for (unsigned eye = 0; eye < 2; ++eye) {
-            legacy.eye_samples[eye].clear();
-            legacy.eye_good[eye] = 0;
+    return apply_mouth_reference_reset(legacy, base, owner, classification);
+}
+
+bool preserve_mouth_quality_reset_time(State& state, uintptr_t base, void* owner,
+                                      const float raw24[24], uint64_t source_ns) {
+    auto& legacy = state.mouth_compatibility;
+    const uint64_t limit = static_cast<uint64_t>(load<int32_t>(owner, 0x100)) * quality_nominal_period_ns;
+    const uint64_t threshold = static_cast<uint64_t>(load<int32_t>(owner, 0x104)) * quality_nominal_period_ns;
+    int32_t classification[2];
+    for (unsigned eye = 0; eye < 2; ++eye) {
+        auto& window = legacy.eye_time[eye];
+        window.window_limit_ns = limit;
+        window.threshold_ns = threshold;
+        if (!window.has_source) {
+            window.has_source = true;
+            window.last_source_ns = source_ns;
+        } else if (source_ns > window.last_source_ns) {
+            advance_time_quality(window, source_ns, raw24[20 + 2 * eye] > 0.4f);
         }
-        legacy.shared_reference_present = true;
-        return true;
+        classification[eye] = window.good_ns > threshold ? 1 : window.bad_ns > threshold ? 0 : -1;
     }
-    return false;
+    return apply_mouth_reference_reset(legacy, base, owner, classification);
 }
 
 } // namespace expression_independent

@@ -14,6 +14,8 @@
 #
 #   /data/local/tmp/picoet-mode : off|dual (default dual; off = no injection)
 #   /data/local/tmp/picoet-gate : off for normal mode, on for dual
+#   /data/local/tmp/picoet-eye-hz, picoet-mouth-hz : startup-only positive integer
+#       targets, capped at 90; defaults 90/90, mouth clamped to eye. Restart needed.
 
 # Magisk may invoke ./action.sh; the injector requires an absolute payload path.
 MODDIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 1
@@ -77,6 +79,8 @@ runtime_snapshot() {
     RUN_PID=${RUN_TOKEN%%:*}
     APPLIED_MODE=off
     APPLIED_GATE=off
+    EFFECTIVE_EYE_HZ=unreported
+    EFFECTIVE_MOUTH_HZ=unreported
     PHASE=unmapped
     MAPPED=no
     [ -n "$RUN_TOKEN" ] || return 0
@@ -87,17 +91,22 @@ runtime_snapshot() {
         return 0
     fi
     PHASE=unreported
-    if ! IFS=' ' read -r schema report_pid report_start report_phase report_mode report_gate extra < "$RUNTIME_DIR/$RUN_PID.state" 2>/dev/null; then
+    if ! IFS=' ' read -r schema report_pid report_start report_phase report_mode report_gate report_eye_hz report_mouth_hz extra < "$RUNTIME_DIR/$RUN_PID.state" 2>/dev/null; then
         return 0
     fi
-    [ "$schema" = 1 ] && [ "$report_pid:$report_start" = "$RUN_TOKEN" ] && [ -z "$extra" ] || return 0
+    [ "$schema" = 2 ] && [ "$report_pid:$report_start" = "$RUN_TOKEN" ] && [ -z "$extra" ] || return 0
     case "$report_phase" in initializing|pending|ready|failed) ;; *) return 0 ;; esac
     case "$report_mode" in off|left|right|dual) ;; *) return 0 ;; esac
     case "$report_gate" in on|off) ;; *) return 0 ;; esac
+    case "$report_eye_hz" in [1-9]|[1-8][0-9]|90) ;; *) return 0 ;; esac
+    case "$report_mouth_hz" in [1-9]|[1-8][0-9]|90) ;; *) return 0 ;; esac
+    [ "$report_mouth_hz" -le "$report_eye_hz" ] || return 0
     [ "$(service_identity)" = "$RUN_TOKEN" ] || return 0
     PHASE=$report_phase
     APPLIED_MODE=$report_mode
     APPLIED_GATE=$report_gate
+    EFFECTIVE_EYE_HZ=$report_eye_hz
+    EFFECTIVE_MOUTH_HZ=$report_mouth_hz
 }
 clear_publish() {
     resetprop -n picoet.enhance.gate off 2>/dev/null
@@ -179,7 +188,7 @@ inject_now() {
     if [ "$MAPPED" = yes ]; then
         case "$PHASE" in ready|pending) return 0 ;; *) return 1 ;; esac
     fi
-    [ -n "$RUN_TOKEN" ] || return 0
+    [ -n "$RUN_TOKEN" ] || return 1
     verify_artifacts
     prepare_runtime
     n=0
@@ -196,7 +205,7 @@ inject_now() {
         fi
         publish
         if [ $rc -eq 0 ] && [ "$RUN_TOKEN" = "$attempt_token" ] && [ "$MAPPED" = yes ]; then
-            log "payload pid=$pid phase=$PHASE applied_mode=$APPLIED_MODE applied_gate=$APPLIED_GATE"
+            log "payload pid=$pid phase=$PHASE applied_mode=$APPLIED_MODE applied_gate=$APPLIED_GATE effective_eye_hz=$EFFECTIVE_EYE_HZ effective_mouth_hz=$EFFECTIVE_MOUTH_HZ"
             [ "$PHASE" != failed ] && [ "$PHASE" != unreported ] && [ "$PHASE" != initializing ]
             return $?
         fi
@@ -259,7 +268,7 @@ fi
 case "$MODE" in
     status)
         runtime_snapshot
-        echo "saved_mode=$(saved_mode) saved_gate=$(saved_gate) injected=$MAPPED service_pid=${RUN_PID:-none} phase=$PHASE applied_mode=$APPLIED_MODE applied_gate=$APPLIED_GATE externalfunc=$(getprop ro.pxr.externalfunc)"
+        echo "saved_mode=$(saved_mode) saved_gate=$(saved_gate) injected=$MAPPED service_pid=${RUN_PID:-none} phase=$PHASE applied_mode=$APPLIED_MODE applied_gate=$APPLIED_GATE effective_eye_hz=$EFFECTIVE_EYE_HZ effective_mouth_hz=$EFFECTIVE_MOUTH_HZ externalfunc=$(getprop ro.pxr.externalfunc)"
         [ -f "$BLOCKED" ] && echo "automatic_injection_blocked=$(cat "$BLOCKED")"
         if [ -f "$PLOG" ]; then
             echo "log_tail:"

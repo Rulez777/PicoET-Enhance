@@ -40,6 +40,7 @@ add_library(picoet_obj OBJECT
     src/picoet_hook.c
     src/expression/high_rate.cpp
     src/expression/integration.cpp
+    src/expression/mouth.cpp
     src/expression/numerical.cpp
     src/expression/state.cpp)
 set_target_properties(picoet_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)

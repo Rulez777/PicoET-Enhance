@@ -1,5 +1,5 @@
 // Runtime payload for pxreyetrackingservice: service-local P1 and independent
-// high-rate eye expressions with the stock mouth chain at its original cadence.
+// eye/mouth expressions at startup-configured source-clock rates.
 // PICO code is addressed only at runtime behind firmware guards, never shipped.
 // C++17; merge_proxy requires -fno-omit-frame-pointer.
 #include <stdio.h>
@@ -34,6 +34,8 @@ constexpr uint64_t kServiceFnv1a64 = 0xC51A2999AF634D51ULL;
 constexpr const char kGateSym[] = "_ZN3PXR7EyeUtil13isBusinessDevEv";
 constexpr const char kEyeModeFile[] = "/data/local/tmp/picoet-mode";
 constexpr const char kGateFile[] = "/data/local/tmp/picoet-gate";
+constexpr const char kEyeHzFile[] = "/data/local/tmp/picoet-eye-hz";
+constexpr const char kMouthHzFile[] = "/data/local/tmp/picoet-mouth-hz";
 constexpr const char kRuntimeDir[] = "/data/local/tmp/picoet-runtime";
 constexpr const char kHookLog[] = "/data/local/tmp/picoet-hook.log";
 constexpr const char kPluginSoname[] = "libpxreyetracking.phoenix.so";
@@ -41,9 +43,10 @@ constexpr uint64_t kPluginMinLoadBytes = 0x34279c;
 constexpr size_t kOffInfer = 0x613e0, kOffTrackor = 0x625b4, kOffOwnerInit = 0x60998;
 constexpr size_t kOffPipeline = 0x605ac, kOffNormalExit = 0x62c6c, kOffCatchExit = 0x62f70;
 constexpr size_t kOffMerge = 0x62f90, kOffDestroy = 0x6016c, kOffExport = 0x60754;
-constexpr const char kExpressionVersion[] = "expression-high-rate-source-dt-effective-time-r2-profile0";
+constexpr const char kExpressionVersion[] = "expression-dual-rate-source-dt-effective-time-r3-profile0";
 unsigned long long g_start_ticks;
 int g_enhanced_mode = 0, g_gate_requested = 1;
+expression_high_rate::RateConfig g_rates;
 uintptr_t g_expr_plugin;
 std::atomic<bool> g_expr_ready {false};
 
@@ -102,9 +105,9 @@ int publish_runtime(const char* phase)
     const char* mode = __atomic_load_n(&picoet_dual_installed, __ATOMIC_RELAXED) ? "dual" : "off";
     snprintf(path, sizeof(path), "%s/%ld.state", kRuntimeDir, (long)getpid());
     snprintf(tmp, sizeof(tmp), "%s/%ld.tmp", kRuntimeDir, (long)getpid());
-    int len = snprintf(record, sizeof(record), "1 %ld %llu %s %s %s\n",
+    int len = snprintf(record, sizeof(record), "2 %ld %llu %s %s %s %u %u\n",
                        (long)getpid(), g_start_ticks, phase, mode,
-                       picoet_gate_installed ? "on" : "off");
+                       picoet_gate_installed ? "on" : "off", g_rates.eye_hz, g_rates.mouth_hz);
     if (!g_start_ticks || len <= 0 || (size_t)len >= sizeof(record)) return -1;
     int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (fd < 0) return -1;
@@ -679,8 +682,9 @@ int install_plugin(uintptr_t base)
     if (installed) {
         snpe_hooks_ready.store(true, std::memory_order_release);
         g_expr_ready.store(true, std::memory_order_release);
-        append_log("install complete; independent full eyes / 24Hz stock mouth; source-dt; "
-                   "effective observation time; EPI1 v2; scoped FaceTrackor profile0");
+        log_fmt("install complete; independent expressions eye_hz=%u mouth_hz=%u; source-dt; "
+                "effective observation time; EPI1 v2; scoped FaceTrackor profile0",
+                g_rates.eye_hz, g_rates.mouth_hz);
         return 0;
     }
     append_log("plugin install failed; rolling back plugin hooks and patches; service restart required");
@@ -700,6 +704,28 @@ int install_plugin(uintptr_t base)
 }
 
 // ---- original mode/bootstrap and asynchronous plugin discovery --------------
+uint32_t read_frequency(const char* path, uint32_t fallback)
+{
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        if (errno != ENOENT) log_fmt("frequency: open %s failed errno=%d; default=%u", path, errno, fallback);
+        return fallback;
+    }
+    char buf[32];
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n > 0 && (size_t)n < sizeof(buf) - 1 && buf[0] >= '0' && buf[0] <= '9') {
+        buf[n] = '\0';
+        char* end;
+        errno = 0;
+        unsigned long value = strtoul(buf, &end, 10);
+        const bool valid_number = !errno && value > 0 && value <= UINT32_MAX;
+        while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') ++end;
+        if (valid_number && !*end && end == buf + n) return static_cast<uint32_t>(value);
+    }
+    log_fmt("frequency: invalid/unreadable %s; default=%u", path, fallback);
+    return fallback;
+}
 int read_enhanced_mode()
 {
     int fd = open(kEyeModeFile, O_RDONLY | O_CLOEXEC);
@@ -756,6 +782,13 @@ __attribute__((constructor)) void picoet_init()
     g_start_ticks = process_start_ticks();
     g_enhanced_mode = read_enhanced_mode();
     g_gate_requested = read_gate_enabled();
+    const uint32_t eye_hz = read_frequency(kEyeHzFile, 90);
+    const uint32_t mouth_hz = read_frequency(kMouthHzFile, 90);
+    g_rates = expression_high_rate::configure_rates(eye_hz, mouth_hz);
+    log_fmt("frequency startup: requested_eye_hz=%u requested_mouth_hz=%u "
+            "effective_eye_hz=%u effective_mouth_hz=%u mouth_clamped=%u",
+            g_rates.requested_eye_hz, g_rates.requested_mouth_hz,
+            g_rates.eye_hz, g_rates.mouth_hz, unsigned(g_rates.mouth_hz != mouth_hz));
     if (publish_runtime("initializing") != 0) {
         append_log("runtime state unavailable; refusing all hooks (prepare picoet-runtime directory)");
         return;

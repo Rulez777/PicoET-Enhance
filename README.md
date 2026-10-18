@@ -2,9 +2,9 @@
 
 English | [简体中文](README_zh.md)
 
-An eye-tracking enhancement Magisk module for the PICO 4 Pro: it opens the eye-tracking service's per-eye gate for real pupil data, decouples the facial expression model so each eye is processed on its own, and runs eye expressions at the camera's 90 Hz instead of the stock rate of about 24 Hz. Use it with [PicoFacialBridge](https://github.com/WolalaQAQ/PicoFacialBridge) and [UnifiedPicoModule](https://github.com/WolalaQAQ/UnifiedPicoModule).
+An eye-tracking enhancement Magisk module for the PICO 4 Pro: it opens the eye-tracking service's per-eye gate for real pupil data, decouples the facial expression model so each eye is processed on its own, and targets 90 Hz for both eye and mouth expressions by default instead of the stock rate of about 24 Hz. Use it with [PicoFacialBridge](https://github.com/WolalaQAQ/PicoFacialBridge) and [UnifiedPicoModule](https://github.com/WolalaQAQ/UnifiedPicoModule).
 
-> v2.3.0 · PICO 4 Pro / PICO OS 5.13.7 · [Changelog](CHANGELOG.md)
+> v2.4.0 · PICO 4 Pro / PICO OS 5.13.7 · [Changelog](CHANGELOG.md)
 
 ## What it does
 
@@ -12,11 +12,11 @@ The PICO 4 Pro firmware tracks each eye, but its facial expression model mixes t
 
 - **Real pupil data**: it opens the per-eye gate inside the eye-tracking service, so real pupil diameter data is written to shared memory.
 - **Independent eyes**: it removes the expression model's cross-eye coupling. EyeLook, Blink, Wide and the brow channels are computed and filtered per eye, each with its own quality window, reference image and history. The filtered right inner brow and the per-eye quality states are exported as an `EPI1` extension, which PicoFacialBridge forwards as `X` packets.
-- **90 Hz eye expressions**: the complete eye-expression path runs on every new camera frame, so eye values reach the PC at about 90 Hz. In an 84-second worn session through Virtual Desktop, about 89.7 `X` packets per second arrived at the PC, each carrying a new eye source. The stock mouth chain stays at about 24 Hz, and eye and mouth inference run in parallel on the frames they share. To carry this rate all the way to VRChat, see [About 90 Hz OSC](#about-90-hz-osc).
+- **90/90 Hz eye and mouth by default**: the eye and mouth expression paths each run on every eligible fresh camera input, and the two inferences for a frame run in parallel. Lower rates are optional ([Eye and mouth rates](#eye-and-mouth-rates)). To carry the high rate all the way to VRChat, see [About 90 Hz OSC](#about-90-hz-osc).
 
-Eye smoothing uses each eye's source-time interval, and quality windows pause across missing frames. Repeated or backward source timestamps do not advance that eye's state.
+Smoothing, mouth baseline adaptation and quality windows follow each source's own timestamps: a long gap pauses the quality window, and a repeated or backward source does not advance anything.
 
-The combined gaze and the mouth algorithm stay stock. Each eye keeps blink endpoints, filtering and the within-eye inner/outer brow linkage. Dark-image admission, reference protection and model quantization remain enabled. On the PC, eye direction and eyelid openness use EyeLook and `1−Blink`; native eye data supplies measured pupil diameter only.
+The inference models and combined gaze stay stock. Each eye keeps blink endpoints, filtering and the within-eye inner/outer brow linkage, and mouth postprocessing keeps the stock rules. Dark-image admission, reference protection and model quantization remain enabled. On the PC, eye direction and eyelid openness use EyeLook and `1−Blink`; native eye data supplies measured pupil diameter only.
 
 The enhancement runs as hooks in the eye-tracking service and is unloaded when that service restarts.
 
@@ -68,13 +68,13 @@ The installer verifies the SHA-256 of the device's eye-tracking libraries and st
 2. Flash it in the Magisk app under Install from storage, or from a command line:
 
    ```sh
-   adb push magisk-picoet-enhance-v2.3.0.zip /data/local/tmp/
-   adb shell su -c 'magisk --install-module /data/local/tmp/magisk-picoet-enhance-v2.3.0.zip'
+    adb push magisk-picoet-enhance-v2.4.0.zip /data/local/tmp/
+    adb shell su -c 'magisk --install-module /data/local/tmp/magisk-picoet-enhance-v2.4.0.zip'
    ```
 
 3. Reboot the headset.
 
-Fresh installs enable enhanced mode (`dual/on`) after reboot. Selecting normal mode keeps enhancement disabled across subsequent reboots.
+Fresh installs enable enhanced mode (`dual/on`) at 90/90 Hz after reboot. If you switched to normal mode before upgrading, it stays off.
 
 ## Usage
 
@@ -89,7 +89,7 @@ sh /data/adb/modules/picoet-enhance/picoet.sh toggle
 
 | Command | Effect |
 |---|---|
-| `status` | Shows the saved mode, injection state, service PID and the current `ro.pxr.externalfunc` value |
+| `status` | Shows the saved and applied mode, injection state, service PID, configured effective eye/mouth targets and the current `ro.pxr.externalfunc` value |
 | `dual` | Enhanced mode: sets `dual/on` together, opening the pupil gate and enabling the per-eye independent expressions |
 | `off` | Normal mode: sets `off/off` together and restarts the service without injection; fully stock |
 | `toggle` | Switches to normal mode if enhancement is ready; otherwise attempts to enable enhancement |
@@ -98,15 +98,47 @@ Switching restarts the eye-tracking service and disconnects eye and face trackin
 
 `on` is accepted as a synonym for `dual`. The state files are `/data/local/tmp/picoet-mode` and `/data/local/tmp/picoet-gate`, and the log is `/data/local/tmp/picoet-hook.log`.
 
+### Eye and mouth rates
+
+The defaults are 90 Hz for eyes and 90 Hz for mouth, and no configuration is needed to use them. To lower either one, write a positive integer to its file:
+
+| File | Default | Effect |
+|---|---:|---|
+| `/data/local/tmp/picoet-eye-hz` | 90 | Eye-expression rate; 90 processes every eligible fresh camera input |
+| `/data/local/tmp/picoet-mouth-hz` | 90 | Mouth-expression rate; cannot exceed the eye rate, because every mouth frame also computes the eyes |
+
+Values above 90 are capped at 90, and a missing or invalid file uses the default. Frames outside the chosen rate are skipped rather than computed. The files are read once when the service starts, so apply a change by stopping tracking clients such as Bridge and re-running `dual`, which restarts the service. For example, to keep eyes at 90 Hz and run the mouth at the stock 24 Hz:
+
+```sh
+echo 90 > /data/local/tmp/picoet-eye-hz
+echo 24 > /data/local/tmp/picoet-mouth-hz
+sh /data/adb/modules/picoet-enhance/picoet.sh dual
+sh /data/adb/modules/picoet-enhance/picoet.sh status
+```
+
+`status` shows the configured rates as `effective_eye_hz` and `effective_mouth_hz`; these are the targets in effect, not measured output rates. To return to 90/90, delete both files and run `dual` again.
+
+Reinstalling or upgrading the module keeps the rates you set. Normal mode (`off`) is fully stock regardless of these files.
+
 ## About the enterprise gate
 
 The firmware uses `PXR::EyeUtil::isBusinessDev()` to control per-eye output, including the real pupil diameter. This module makes the function return true inside the eye-tracking service. The device-wide enterprise-mode property `ro.pxr.externalfunc` keeps its existing value.
 
 ## Compatibility and verification
 
-The high-rate path has been validated on PICO 4 Pro / PICO OS 5.13.7 with PicoFacialBridge 0.5.0, UnifiedPicoModule 0.4.0 and official VRCFT 5.4.5. In an 84-second worn session streaming through Virtual Desktop, with Cymple mouth tracking and PICO eyes, the Bridge sent about 89.7 `X` packets per second to the PC, each with a new eye source. PICO eyes with face tracking, without Cymple, also ran normally. Earlier recorded-input tests covered inference throughput and transport.
+The 90/90 path was measured on a PICO 4 Pro (PICO OS 5.13.7) that was awake with tracking ready and not worn. The test replayed 2,700 recorded camera inputs (about 30 seconds) through a test harness that drives the module's expression-processing algorithm, with PicoFacialBridge 0.5.0, UnifiedPicoModule 0.4.0, VRCFT-Enhance and desktop VRChat:
 
-Not yet covered: single-eye quality failure, staggered reference rebuild, a live mouth-output comparison and long live-camera sessions. The stock shared mouth processing and combined gaze remain unchanged, and the host-side brow parameters used by current avatars average the two sides even though the extension carries both.
+| Stage | Rate |
+|---|---:|
+| Eye and mouth computation on the headset | 89.80 Hz (2,694 of 2,700 inputs; the other six hit the stock full-queue drop rule, with no inference failures) |
+| Bridge → PC (`X` packets) | 89.84 Hz |
+| VRCFT → OSC, eye and mouth from the same source | 87.80 Hz (2,633 sources, 97.5% of inputs) |
+
+For every source that reached OSC, VRChat sent back at least one eye and one mouth value equal to the one written. Values matched their source at every stage; this covers the supported fields the test avatar actually sends. The loopback packet capture dropped packets, so the PC-side counts are verifiable lower bounds. From `X` arrival at the PC to OSC output, the median is 9.1 ms and the 95th percentile 12.5 ms. The replay was not run through the installed Magisk package, and it does not include live camera copying or Virtual Desktop decoding and rendering.
+
+On version 2.3.0 (mouth at about 24 Hz), official VRCFT 5.4.5 was also run for 84 seconds worn on Virtual Desktop with Cymple mouth tracking and PICO eyes: about 89.7 `X` packets per second reached the PC, each with a new eye source.
+
+Not yet covered: single-eye quality failure, staggered reference rebuild, a live mouth-output comparison and long live-camera sessions. Combined gaze remains unchanged, and the host-side brow parameters used by current avatars average the two sides even though the extension carries both.
 
 ## Disabling and uninstalling
 
@@ -129,7 +161,6 @@ Pushing a `v<version>` tag makes GitHub Actions build on a Windows runner and pu
 
 - [ ] Tongue-direction support: PICO currently exposes only the scalar `TongueOut`, while VRCFaceTracking already defines direction channels such as `TongueLeft/Right/Up/Down`. The plan is to capture raw frames from the lower-face camera, auto-label them with visual segmentation foundation models, train a small model, and let users collect their own data for a local online fine-tune.
 - [ ] Unfiltered face output: make the on-device FaceTrackor temporal smoothing optional so the module can forward per-frame raw face data. Filtering then moves to the PC side, where it can be tuned as needed.
-- [ ] Eye and face tracking in sync at 90 Hz: eye expressions already run at the camera rate, while the stock mouth chain stays at about 24 Hz. The goal is to bring the face model up to the same rate so eye and mouth values reach the PC, and then OSC, together at 90 Hz, with both models sharing the headset's compute budget during streaming.
 
 ## Feedback
 

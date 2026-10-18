@@ -3,6 +3,7 @@
 #include "numerical.h"
 #include "state.h"
 #include "high_rate.h"
+#include "mouth.h"
 
 #include <cmath>
 #include <cstring>
@@ -18,11 +19,13 @@ Merge original_merge;
 struct OwnerState {
     State reference;
     SourceDtState dt_filter;
+    MouthState mouth_filter;
     NativeBrowFilter left, right;
     uint64_t mouth_source = 0;
     bool have_mouth_source = false;
     uint64_t published_sources[3] {};
     uint32_t published_mask = 0;
+    float right_inner = 0;
     explicit OwnerState(uintptr_t base) : left(base), right(base) {}
 };
 // Hooks may run before this translation unit's dynamic initializers.
@@ -36,9 +39,12 @@ struct Frame {
     OwnerState* state = nullptr;
     unsigned raw_calls = 0, merge_calls[2] {};
     size_t raw_length = 0;
+    unsigned mouth_calls = 0;
+    size_t mouth_length = 0;
     bool completion_seen = false, completed = false, applied = false, pending_export = false;
     int32_t export_state[2] {};
     float raw[24] {}, post[20] {}, filtered[20] {}, final[52] {};
+    float mouth_raw[35] {};
     float right_inner = 0;
     FrameTiming timing;
     bool eye_only_completed = false;
@@ -127,11 +133,18 @@ void export_prefix(void* prefix) {
 }
 void observe_eye_only_completion(bool completed) { frame.eye_only_completed = completed; }
 void observe_infer(void* engine, const float* values, size_t count) {
-    if (!frame.state || engine != load<void*>(frame.owner, 0x880)) return;
-    ++frame.raw_calls;
-    frame.raw_length = count;
-    if (count == 24 && values) std::memcpy(frame.raw, values, sizeof(frame.raw));
-    else if (!values) frame.raw_length = 0;
+    if (!frame.state) return;
+    if (engine == load<void*>(frame.owner, 0x880)) {
+        ++frame.raw_calls;
+        frame.raw_length = count;
+        if (count == 24 && values) std::memcpy(frame.raw, values, sizeof(frame.raw));
+        else if (!values) frame.raw_length = 0;
+    } else if (engine == load<void*>(frame.owner, 0x890)) {
+        ++frame.mouth_calls;
+        frame.mouth_length = count;
+        if (count == 35 && values) std::memcpy(frame.mouth_raw, values, sizeof(frame.mouth_raw));
+        else if (!values) frame.mouth_length = 0;
+    }
 }
 void observe_completion(bool completed) {
     if (!frame.state) return;
@@ -156,6 +169,16 @@ void fail_frame(float* output, uint32_t attempted_mask) {
 void end_frame(float* output) {
     if (!frame.state) return;
     ReferenceFrameGuard reference_guard {frame.state->reference};
+    if (frame.timing.skipped) {
+        output[52] = output[53] = 0.0f;
+        frame.right_inner = frame.state->right_inner;
+        for (unsigned eye = 0; eye < 2; ++eye)
+            frame.export_state[eye] = frame.state->reference.eyes[eye].classification;
+        std::memcpy(frame.final, output, sizeof(frame.final));
+        frame.applied = true;
+        frame.pending_export = true;
+        return;
+    }
     const bool full_completed = frame.completion_seen && frame.completed;
     // A later mouth/stock-tail failure may still export this completed eye once;
     // the dispatcher seals the partially advanced owner before the next frame.
@@ -171,13 +194,29 @@ void end_frame(float* output) {
     filter_eye20_dt(frame.state->dt_filter, frame.raw, frame.post, frame.filtered,
                     frame.timing.source_ns, NativeBrowFilter::predict_dt, contexts);
     frame.right_inner = writeback_expression52(frame.filtered, output);
+    frame.state->right_inner = frame.right_inner;
     const Validity validity = observe_quality_time(frame.state->reference, frame.owner,
                                                    frame.raw, frame.timing.source_ns);
     output[52] = validity.combined;
     (void)finish_references_time(frame.state->reference, plugin, frame.owner,
         frame.state->reference.frame_current[0], frame.state->reference.frame_current[1]);
     if (frame.timing.slow && full_completed) {
-        (void)preserve_mouth_quality_reset(frame.state->reference, plugin, frame.owner, frame.raw);
+        bool mouth_complete = frame.mouth_calls == 1 && frame.mouth_length == 35;
+        for (float value : frame.mouth_raw) mouth_complete = mouth_complete && std::isfinite(value);
+        if (!mouth_complete) throw std::runtime_error("mouth_raw35_incomplete");
+        frame.state->mouth_filter.window_samples = load<uint32_t>(frame.owner, 0x108);
+        frame.state->mouth_filter.threshold_samples = load<uint32_t>(frame.owner, 0x10c);
+#ifdef PICOET_MOUTH_STOCK_STEP
+        output[53] = process_mouth_step(frame.state->mouth_filter, frame.mouth_raw,
+                                       frame.timing.source_ns[2], output);
+        const bool reset = preserve_mouth_quality_reset(frame.state->reference, plugin, frame.owner, frame.raw);
+#else
+        output[53] = process_mouth_dt(frame.state->mouth_filter, frame.mouth_raw,
+                                     frame.timing.source_ns[2], output);
+        const bool reset = preserve_mouth_quality_reset_time(frame.state->reference, plugin,
+            frame.owner, frame.raw, frame.timing.source_ns[2]);
+#endif
+        if (reset) reset_mouth_quality(frame.state->mouth_filter);
     } else if (frame.timing.slow) output[53] = 0.0f;
     std::memcpy(frame.final, output, sizeof(frame.final));
     for (unsigned i = 0; i < 2; ++i)

@@ -2,6 +2,29 @@
 
 English | [简体中文](CHANGELOG_zh.md)
 
+## [2.4.0] - 2026-10-18
+
+### Features
+- Eye and mouth expressions now run at 90/90 Hz by default, up from 90/24. Both paths process every eligible fresh camera input, with the two inferences for a frame running in parallel.
+- Add rate files for lowering either rate: `/data/local/tmp/picoet-eye-hz` and `/data/local/tmp/picoet-mouth-hz` take a positive integer, are capped at 90, and fall back to 90 when missing or invalid. The mouth rate cannot exceed the eye rate, and frames outside the chosen rate are skipped. Setting only the mouth file to 24 gives 90/24; see the README.
+- Rebuild mouth postprocessing from the raw 35-value mouth output into the 33 mouth slots. Smoothing, gated baseline adaptation and quality timing now advance by the mouth's own source time, as the eye path already did.
+- `picoet.sh status` reports `effective_eye_hz` and `effective_mouth_hz`, the effective configured target rates, not measured output rates.
+
+### Fixed
+- Fix `picoet.sh dual` reporting success when the restarted eye-tracking service exited before enhancement was loaded, leaving `status` showing it unloaded and off. The command now reports the failure, and the background watchdog retries on its next pass. This also affected 2.3.0.
+
+### Design Rationale
+- Mouth smoothing involves a double k6 step whose second pass depends on the first pass's error, so the whole step is normalized to source time once rather than scaling each pass separately. When the time ratio is one, the stock floating-point order is kept: over a 2,700-frame control, all 52 float values, validity bits and source identities match the reference output exactly.
+- The inference models, same-frame parallelism and stock queue-full behavior are unchanged, and rates are never lowered automatically under load. The stock 24 Hz reference period also stays as it was.
+
+### Notes & Caveats
+- The rate files are read once when the service starts. Apply a change by running `picoet.sh dual`, which restarts the service and disconnects tracking clients; the command refuses while clients are connected unless you add `--force`. Normal mode (`off`) stays fully stock.
+- Fresh installs enable `dual/on` at 90/90, and an upgrade keeps a saved `off`. Installing 2.4.0 over an earlier version starts at 90/90 once; rates you set afterwards are kept when you reinstall or upgrade.
+- Deploy the payload and the matching `picoet.sh` together, since the runtime state now carries both rates (schema 2).
+- Mouth baseline adaptation and quality timing are time-normalized approximations, so output at different rates is close but not bit-identical.
+- No PicoFacialBridge or UnifiedPicoModule changes: `EPI1` v2 and `X` v2 are unchanged, and PicoFacialBridge 0.5.0+ with UnifiedPicoModule 0.4.0+ remain the matching versions.
+- Measured on an awake, tracking-ready PICO 4 Pro (not worn) by replaying 2,700 recorded camera inputs at 90/90 through a test harness that drives the module's expression-processing algorithm: eye and mouth computation completed at 89.80 Hz, with six inputs dropped by the stock full-queue rule and no inference failures. With VRCFT-Enhance and desktop VRChat, 2,633 sources (87.80 Hz) carried eye and mouth together through `X`, SDK IPC and OSC with values matching at each stage; the loopback packet capture dropped packets, so the downstream counts are verifiable lower bounds. The replay was not run through the installed Magisk package and does not cover live camera copying or Virtual Desktop decoding and rendering. See the README for details.
+
 ## [2.3.0] - 2026-10-17
 
 ### Features

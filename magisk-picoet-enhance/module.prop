@@ -1,6 +1,6 @@
 id=picoet-enhance
 name=PicoET-Enhance
-version=2.3.0
-versionCode=17
+version=2.4.0
+versionCode=18
 author=PicoFacialBridge
-description=Runtime eye-tracking enhancement by ptrace injection: opens the service-local gate (real pupil diameter) and removes the facial expression model's cross-eye coupling, so EyeLook, Blink, Wide and brows are computed per eye, with the right inner brow and per-eye quality states exported as the EPI1 extension. Ships no PICO bytes, writes no system file and no persistent property; ro.pxr.externalfunc is never touched. Action toggles enhanced (dual/on) and normal (off/off). Commands: picoet.sh dual | off | toggle | status.
+description=Runtime eye-tracking enhancement: real pupil diameter, independent per-eye expressions and 90/90 Hz eye/mouth targets by default, with configurable rates, source-time smoothing and EPI1 v2 output. Ships no PICO bytes, writes no system file and no persistent property; ro.pxr.externalfunc is never touched. Action toggles enhanced (dual/on) and normal (off/off). Commands: picoet.sh dual | off | toggle | status.

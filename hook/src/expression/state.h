@@ -63,6 +63,7 @@ struct EyeState {
 struct MouthQualityCompatibility {
     std::deque<uint8_t> eye_samples[2];
     int32_t eye_good[2] {};
+    QualityTimeWindow eye_time[2];
     bool shared_reference_present = false;
 };
 
@@ -135,6 +136,13 @@ uint32_t finish_references_time(State& state, uintptr_t base, void* owner,
 // Returns true if the stock shared-reference event clears owner+0x180/+0x118.
 // Does not change this frame's mouth_valid or any independent eye state.
 bool preserve_mouth_quality_reset(State& state, uintptr_t base, void* owner,
-                                  const float raw24[24]);
+                                   const float raw24[24]);
+
+// Source-time counterpart for the legacy shared-reference event. Only complete
+// new mouth observations call this; fast eye frames must not advance it. Like
+// independent eye quality, long gaps pause missing evidence. Its queue-reset
+// timing is an observation-time approximation, not stock count equivalence.
+bool preserve_mouth_quality_reset_time(State& state, uintptr_t base, void* owner,
+                                      const float raw24[24], uint64_t source_ns);
 
 } // namespace expression_independent

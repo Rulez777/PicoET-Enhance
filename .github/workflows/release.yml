@@ -61,6 +61,15 @@ jobs:
           $hash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $([IO.Path]::GetFileName($destination))" | Set-Content "$destination.sha256" -Encoding ascii
           Copy-Item LICENSE, THIRD_PARTY_NOTICES.md $directory.FullName -Force
+          function Get-VersionNotes([string]$path) {
+            $text = Get-Content -Raw -Encoding utf8 $path
+            $version = [regex]::Escape($env:MODULE_VERSION)
+            $section = [regex]::Match($text, "(?ms)^## \[$version\][^\r\n]*\r?\n(.*?)(?=^## \[|\z)")
+            if (-not $section.Success) { throw "Missing changelog section $env:MODULE_VERSION in $path" }
+            $section.Groups[1].Value.Trim()
+          }
+          $notes = "## English`n`n$(Get-VersionNotes 'CHANGELOG.md')`n`n## 简体中文`n`n$(Get-VersionNotes 'CHANGELOG_zh.md')`n"
+          $notes | Set-Content (Join-Path $directory.FullName 'release-notes.md') -Encoding utf8NoBOM
 
       - name: Upload build artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -96,6 +105,6 @@ jobs:
           cd release
           sha256sum --check --strict -- *.zip.sha256
           gh release create "$RELEASE_TAG" \
-            --verify-tag --generate-notes \
+            --verify-tag --notes-file release-notes.md \
             --title "PicoET-Enhance $RELEASE_TAG" \
             *.zip *.zip.sha256 LICENSE THIRD_PARTY_NOTICES.md
