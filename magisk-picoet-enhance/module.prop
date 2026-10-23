@@ -1,6 +1,6 @@
 id=picoet-enhance
 name=PicoET-Enhance
-version=2.4.1
-versionCode=19
+version=2.4.2
+versionCode=20
 author=PicoFacialBridge
 description=Runtime eye-tracking enhancement: real pupil diameter, independent per-eye expressions and 90/90 Hz eye/mouth targets by default, with configurable rates, source-time smoothing and EPI1 v2 output. Ships no PICO bytes, writes no system file and no persistent property; ro.pxr.externalfunc is never touched. Action toggles enhanced (dual/on) and normal (off/off). Commands: picoet.sh dual | off | toggle | status.

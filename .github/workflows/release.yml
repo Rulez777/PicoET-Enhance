@@ -45,7 +45,10 @@ jobs:
           "MODULE_VERSION=$version" >> $env:GITHUB_ENV
 
       - name: Build hook artifacts
-        run: ./hook/build-hook.ps1
+        run: >-
+          ./hook/build-hook.ps1
+          -Ndk "$env:ANDROID_HOME/ndk/26.1.10909125"
+          -CmakeBin "$env:ANDROID_HOME/cmake/3.22.1/bin"
 
       - name: Package Magisk module
         run: ./build-picoet-enhance.ps1

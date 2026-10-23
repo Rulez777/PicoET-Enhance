@@ -2,6 +2,17 @@
 
 English | [简体中文](CHANGELOG_zh.md)
 
+## [2.4.2] - 2026-10-24
+
+### Fixed
+- Pass the installed NDK 26.1.10909125 and CMake 3.22.1 paths explicitly as `-Ndk` and `-CmakeBin` to `build-hook.ps1`, fixing CI's selection of the runner's preinstalled NDK 27.3 / CMake 4.1.2.
+
+### Design Rationale
+- Installing a toolchain does not ensure the build selects it, so CI must explicitly select the same versions used for validation.
+
+### Notes & Caveats
+- `versionCode` is 20; runtime sources, default 90/90 targets, configuration, schema 2 / `EPI1` v2 / `X` v2 and companion requirements are unchanged.
+
 ## [2.4.1] - 2026-10-24
 
 ### Features
