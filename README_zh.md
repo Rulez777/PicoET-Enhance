@@ -4,7 +4,7 @@
 
 面向 PICO 4 Pro 的眼动增强 Magisk 模块：打开眼动服务的逐眼门控以输出真实瞳孔数据，解除面部表情模型的跨眼耦合让左右眼各自计算，并把眼部与嘴部表情目标频率从原厂约 24 Hz 提高到默认 90/90 Hz。配合 [PicoFacialBridge](https://github.com/WolalaQAQ/PicoFacialBridge) 和 [UnifiedPicoModule](https://github.com/WolalaQAQ/UnifiedPicoModule) 使用。
 
-> v2.4.0 · PICO 4 Pro / PICO OS 5.13.7 · [更新日志](CHANGELOG_zh.md)
+> v2.4.1 · PICO 4 Pro / PICO OS 5.13.7 · [更新日志](CHANGELOG_zh.md)
 
 ## 它做什么
 
@@ -68,8 +68,8 @@ Windows 11 可能会忽略官方宿主申请的 1 ms 定时器精度，这时每
 2. 在 Magisk App 中通过“从本地安装”刷入，或使用命令行：
 
    ```sh
-    adb push magisk-picoet-enhance-v2.4.0.zip /data/local/tmp/
-    adb shell su -c 'magisk --install-module /data/local/tmp/magisk-picoet-enhance-v2.4.0.zip'
+    adb push magisk-picoet-enhance-v2.4.1.zip /data/local/tmp/
+    adb shell su -c 'magisk --install-module /data/local/tmp/magisk-picoet-enhance-v2.4.1.zip'
    ```
 
 3. 重启头显。
@@ -98,6 +98,14 @@ sh /data/adb/modules/picoet-enhance/picoet.sh toggle
 
 `on` 可作为 `dual` 的同义词。状态文件为 `/data/local/tmp/picoet-mode` 与 `/data/local/tmp/picoet-gate`，日志为 `/data/local/tmp/picoet-hook.log`。
 
+### 自动加载与恢复
+
+自动注入会等待 `sys.boot_completed=1`，并确认同一个眼动服务实例的 Binder 已响应。使用增强模式时，建议先确认 `picoet.sh status` 显示 `phase=ready applied_mode=dual applied_gate=on`，再启动 Bridge 等追踪客户端。
+
+`ready` 表示 hook 已安装且目标频率已配置。如果引擎在 hook 前就已初始化，会保留该引擎，不追补 profile 0 或启动期 ET 配置；增强侧状态会重新热身，不强制重建引擎。
+
+暂时找不到安全执行线程，或准备期间遇到临时信号停止时，注入器返回 `3`。看护脚本会释放控制锁，在锁外等待 30 秒后重试，不消耗两类预算。同步与异步不安全失败共用一次自动恢复机会，每次开机或显式模式命令重新计数。另有独立上限：最多自动注入三个连续不稳定的服务实例，只有同一实例连续保持 `ready` 满 60 秒才补充次数。预算耗尽后，自动注入暂停，直到下次开机或显式执行模式命令。
+
 ### 眼部与嘴部频率
 
 默认眼部 90 Hz、嘴部 90 Hz，无需任何配置。要降低其中一项，把正整数写入对应文件：
@@ -118,7 +126,7 @@ sh /data/adb/modules/picoet-enhance/picoet.sh status
 
 `status` 中的 `effective_eye_hz` 和 `effective_mouth_hz` 是当前生效的配置目标，不是实测输出频率。要恢复 90/90，删除两个文件后再次运行 `dual`。
 
-重装或升级模块会保留你设置的频率。普通模式 `off` 完全是原厂行为，不受这些文件影响。
+在 2.4.0 及之后版本设置的频率会在重装或升级时保留。只有首次从 2.4.0 之前的版本迁入时，才清除旧覆盖并以 90/90 起步。普通模式 `off` 完全是原厂行为，不受这些文件影响。
 
 ## 关于企业版门控
 
@@ -126,7 +134,9 @@ sh /data/adb/modules/picoet-enhance/picoet.sh status
 
 ## 兼容性与验证情况
 
-90/90 路径在一台 PICO 4 Pro（PICO OS 5.13.7）上实测，设备保持唤醒、追踪就绪，未佩戴。测试用一套测试驱动程序复用模块的表情处理算法，回放 2,700 组录制的相机输入（约 30 秒），搭配 PicoFacialBridge 0.5.0、UnifiedPicoModule 0.4.0、VRCFT-Enhance 和桌面 VRChat：
+2.4.1 已在 PICO 4 Pro / PICO OS 5.13.7 / SELinux permissive 上检查，正常开机、升级、模式切换、重复控制命令及定点失败分支均通过。一次 45 秒真人佩戴验证确认了持续眼嘴更新、眨眼与张闭嘴响应、profile 0 初始化无重试，以及正常停止追踪，期间服务未重启。原厂库未修改。SELinux enforcing 尚未实测。
+
+以下 90/90 数据来自此前的 2.4.0 验证，并非 2.4.1 重新测得的吞吐。设备为 PICO 4 Pro（PICO OS 5.13.7），保持唤醒、追踪就绪，未佩戴。测试用一套测试驱动程序复用模块的表情处理算法，回放 2,700 组录制的相机输入（约 30 秒），搭配 PicoFacialBridge 0.5.0、UnifiedPicoModule 0.4.0、VRCFT-Enhance 和桌面 VRChat：
 
 | 环节 | 频率 |
 |---|---:|
@@ -142,7 +152,7 @@ sh /data/adb/modules/picoet-enhance/picoet.sh status
 
 ## 关闭与卸载
 
-运行 `picoet.sh off` 可关闭增强并恢复原厂眼动服务。要移除模块，在 Magisk 中卸载后重启头显。
+运行 `picoet.sh off` 可关闭增强并恢复原厂眼动服务。要移除模块，在 Magisk 中卸载后重启头显。清理只删除已知状态文件，不递归进入意外目录或子挂载，因此这些目录可能保留。
 
 ## 从源码构建
 

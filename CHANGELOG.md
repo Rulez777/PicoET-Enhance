@@ -2,6 +2,31 @@
 
 English | [简体中文](CHANGELOG_zh.md)
 
+## [2.4.1] - 2026-10-24
+
+### Features
+- Defer automatic injection until `sys.boot_completed=1` and Binder readiness from the same service instance. Early boot no longer performs injection or runtime-state cleanup.
+- Bound automatic injection across consecutive unstable instances: at most three instances, replenished only after the same instance stays continuously `ready` for 60 seconds. Repeated control/watchdog initialization does not reset the count.
+
+### Fixed
+- Use `PTRACE_SEIZE` / `PTRACE_INTERRUPT` to stop and rescan all threads, verifying process/thread identity and mappings before remote execution. Read back restored GPR, FPSIMD and temporary instruction bytes before resuming; unsafe execution or restoration failures terminate the affected instance.
+- Treat temporary signal stops and lack of a safe executor as injector exit `3`, not a permanent injection block. Release the control lock before the watchdog's 30-second cooldown, and return the unused automatic-injection reservation.
+- Apply the existing single recovery budget to synchronous and asynchronous unsafe failures. Persist the reservation before acknowledging the failure, and avoid restarting a replacement instance that is already running.
+- Serialize installation and runtime control with the same lock. Preserve saved `off` from legacy root-owned `0666` files during migration; use checked file descriptors and atomic replacement for configuration and runtime reports.
+- Fix ByteSig's default-signal handling: recognize `SIG_DFL` and `SIG_IGN` before `SA_SIGINFO`, restore the default disposition and re-deliver to the same thread without changing the interrupted signal mask. Protected operations and custom handlers retain their existing behavior.
+- Replace recursive uninstall cleanup with deletion of known leaf files and removal of empty directories, without traversing nested mounts. Unexpected directories may remain.
+
+### Design Rationale
+- Keep unsafe recovery separate from the unstable-instance limit: temporary preparation failures (injector exit `3`) consume neither budget, while early consecutive replacements without asynchronous failure reports remain subject to the unstable-instance limit. A new boot or explicit mode command resets the budgets.
+- Keep engines initialized before hook installation running. Profile 0 and startup ET configuration are not applied retroactively; enhancement state warms up again without forcing an engine rebuild. `ready` describes installed hooks and configured targets, not reconstruction of an existing engine.
+- Leave expression algorithms, inference models, default 90/90 targets and stock queue behavior unchanged. PICO system libraries remain unmodified.
+
+### Notes & Caveats
+- VersionCode is 19. Configuration paths, runtime schema 2, `EPI1` v2 / `X` v2 and companion properties are unchanged; PicoFacialBridge 0.5.0+ and UnifiedPicoModule 0.4.0+ remain the matching components. Install the scripts, injector and payload together, then reboot.
+- The one-time frequency migration still applies only to installed versionCode below 18 (before 2.4.0). Reinstalling or upgrading from 2.4.0 or later preserves user-selected rates and saved `off`.
+- Passed 188 offline checks (59 packaging/source, 123 shell and six existing logic-model checks), 35 injector control cases including targeted diagnostic fault checks, 20 payload file-I/O checks, four isolated uninstall checks, 19 ByteSig signal modes and 37 local callback/registry tests. The callback/registry tests do not run SNPE.
+- On PICO 4 Pro / PICO OS 5.13.7 with SELinux permissive, normal boot, upgrade, off→dual and repeated ensure passed. A 45-second worn session confirmed live eye/mouth updates and action response, profile 0 initialization without retries, and normal STOP/END without a service restart. This was not a new 90 Hz throughput measurement; earlier throughput figures retain their documented scope. SELinux enforcing remains untested.
+
 ## [2.4.0] - 2026-10-18
 
 ### Features

@@ -22,16 +22,11 @@ set_perm "$MODPATH/lib/libpicoet_hook.so" 0 0 0644
 set_perm "$MODPATH/hashes.sh" 0 0 0644
 
 # An upgrade is staged until reboot. Keep the running instance's actual state;
-# post-fs-data.sh clears it at boot and service.sh republishes the replacement.
+# service.sh clears stale reports and republishes the replacement after boot.
 
 # Fresh installs enable the pupil gate and the per-eye expression path.
 # Preserve normal mode; migrate legacy enhanced settings to dual/on.
-case "$(cat /data/local/tmp/picoet-mode 2>/dev/null)" in
-    off) echo off > /data/local/tmp/picoet-gate || abort "! Cannot save normal mode" ;;
-    *)
-        echo dual > /data/local/tmp/picoet-mode || abort "! Cannot save enhanced mode"
-        echo on > /data/local/tmp/picoet-gate || abort "! Cannot save enhanced gate" ;;
-esac
+mode=$("$MODPATH/bin/picoet-inject" --normalize-mode) || abort "! Cannot normalize mode/gate under the control lock"
 
 # Only the first upgrade from before 2.4.0 resets development-era overrides.
 # Reinstalls and later upgrades keep settings chosen through the new interface.
@@ -44,7 +39,7 @@ fi
 ui_print "- PicoET-Enhance (runtime ptrace injection; no PICO bytes, no system writes)"
 ui_print "- Fresh-install default: dual/on; upgrades keep off as off/off, otherwise use dual/on."
 ui_print "- Enhanced eye/mouth defaults: 90/90 Hz."
-ui_print "- Saved state: mode=$(cat /data/local/tmp/picoet-mode) gate=$(cat /data/local/tmp/picoet-gate)"
+ui_print "- Saved state: mode=$mode"
 ui_print "- ro.pxr.externalfunc is never touched."
 ui_print "- Switch (root, restarts eye/face tracking):"
 ui_print "    sh /data/adb/modules/picoet-enhance/picoet.sh dual|off"

@@ -4,7 +4,7 @@ English | [简体中文](README_zh.md)
 
 An eye-tracking enhancement Magisk module for the PICO 4 Pro: it opens the eye-tracking service's per-eye gate for real pupil data, decouples the facial expression model so each eye is processed on its own, and targets 90 Hz for both eye and mouth expressions by default instead of the stock rate of about 24 Hz. Use it with [PicoFacialBridge](https://github.com/WolalaQAQ/PicoFacialBridge) and [UnifiedPicoModule](https://github.com/WolalaQAQ/UnifiedPicoModule).
 
-> v2.4.0 · PICO 4 Pro / PICO OS 5.13.7 · [Changelog](CHANGELOG.md)
+> v2.4.1 · PICO 4 Pro / PICO OS 5.13.7 · [Changelog](CHANGELOG.md)
 
 ## What it does
 
@@ -68,8 +68,8 @@ The installer verifies the SHA-256 of the device's eye-tracking libraries and st
 2. Flash it in the Magisk app under Install from storage, or from a command line:
 
    ```sh
-    adb push magisk-picoet-enhance-v2.4.0.zip /data/local/tmp/
-    adb shell su -c 'magisk --install-module /data/local/tmp/magisk-picoet-enhance-v2.4.0.zip'
+    adb push magisk-picoet-enhance-v2.4.1.zip /data/local/tmp/
+    adb shell su -c 'magisk --install-module /data/local/tmp/magisk-picoet-enhance-v2.4.1.zip'
    ```
 
 3. Reboot the headset.
@@ -98,6 +98,14 @@ Switching restarts the eye-tracking service and disconnects eye and face trackin
 
 `on` is accepted as a synonym for `dual`. The state files are `/data/local/tmp/picoet-mode` and `/data/local/tmp/picoet-gate`, and the log is `/data/local/tmp/picoet-hook.log`.
 
+### Automatic loading and recovery
+
+Automatic injection waits for `sys.boot_completed=1` and a Binder response from the same eye-tracking service instance. Before starting Bridge or another tracking client in enhanced mode, check that `picoet.sh status` shows `phase=ready applied_mode=dual applied_gate=on`.
+
+`ready` confirms the installed hooks and configured target rates. Engines initialized before the hooks are kept running: profile 0 and startup ET settings are not applied retroactively, and the enhancement's own state warms up again rather than forcing an engine rebuild.
+
+If no safe executor is available, or a temporary signal stop interrupts preparation, the injector returns `3`. The watchdog releases the control lock and waits 30 seconds before retrying, without consuming either budget. Synchronous and asynchronous unsafe failures share one automatic recovery per boot or explicit mode command. A separate limit permits injection into at most three consecutive unstable service instances; only the same instance remaining continuously `ready` for 60 seconds replenishes that limit. When a budget is exhausted, automatic injection stops until the next boot or an explicit mode command.
+
 ### Eye and mouth rates
 
 The defaults are 90 Hz for eyes and 90 Hz for mouth, and no configuration is needed to use them. To lower either one, write a positive integer to its file:
@@ -118,7 +126,7 @@ sh /data/adb/modules/picoet-enhance/picoet.sh status
 
 `status` shows the configured rates as `effective_eye_hz` and `effective_mouth_hz`; these are the targets in effect, not measured output rates. To return to 90/90, delete both files and run `dual` again.
 
-Reinstalling or upgrading the module keeps the rates you set. Normal mode (`off`) is fully stock regardless of these files.
+Rates set in 2.4.0 or later survive reinstalls and upgrades. Only the first migration from a version before 2.4.0 clears old overrides to start at 90/90. Normal mode (`off`) is fully stock regardless of these files.
 
 ## About the enterprise gate
 
@@ -126,7 +134,9 @@ The firmware uses `PXR::EyeUtil::isBusinessDev()` to control per-eye output, inc
 
 ## Compatibility and verification
 
-The 90/90 path was measured on a PICO 4 Pro (PICO OS 5.13.7) that was awake with tracking ready and not worn. The test replayed 2,700 recorded camera inputs (about 30 seconds) through a test harness that drives the module's expression-processing algorithm, with PicoFacialBridge 0.5.0, UnifiedPicoModule 0.4.0, VRCFT-Enhance and desktop VRChat:
+Version 2.4.1 was checked on PICO 4 Pro / PICO OS 5.13.7 with SELinux permissive: normal boot, upgrade, mode switching, repeated control commands and targeted failure branches passed. A 45-second worn session confirmed live eye and mouth updates, blink and mouth response, profile 0 initialization without retries, and normal tracking shutdown without a service restart. The stock libraries were unchanged. SELinux enforcing has not been tested.
+
+The following 90/90 measurements are from the earlier 2.4.0 validation, not a new throughput test for 2.4.1. The PICO 4 Pro (PICO OS 5.13.7) was awake with tracking ready and not worn. The test replayed 2,700 recorded camera inputs (about 30 seconds) through a test harness that drives the module's expression-processing algorithm, with PicoFacialBridge 0.5.0, UnifiedPicoModule 0.4.0, VRCFT-Enhance and desktop VRChat:
 
 | Stage | Rate |
 |---|---:|
@@ -142,7 +152,7 @@ Not yet covered: single-eye quality failure, staggered reference rebuild, a live
 
 ## Disabling and uninstalling
 
-Run `picoet.sh off` to disable enhancement and restore the stock eye-tracking service. To remove the module, uninstall it in Magisk and reboot the headset.
+Run `picoet.sh off` to disable enhancement and restore the stock eye-tracking service. To remove the module, uninstall it in Magisk and reboot the headset. Cleanup removes known state files without recursively entering unexpected directories or nested mounts, so those directories may remain.
 
 ## Building from source
 

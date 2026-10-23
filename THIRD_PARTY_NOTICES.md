@@ -11,6 +11,12 @@ allocation is disabled via `PICOET_SHADOWHOOK_NO_ELF_GAP`, so hook islands use o
 anonymous mappings. The Android syscall extensions in `cpp/third_party/lss/` are
 also covered by ByteDance's MIT notice.
 
+The integration also patches `cpp/common/bytesig.c`: signal chaining checks
+`SIG_DFL` and `SIG_IGN` before `SA_SIGINFO`. For the default disposition, it restores
+the previous action and re-delivers the signal to the same thread, leaving the
+interrupted signal mask unchanged. Protected operations and custom handlers retain
+their existing behavior. ByteSig's existing MIT notice is retained.
+
 ```
 MIT License
 

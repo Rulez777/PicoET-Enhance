@@ -1,4 +1,4 @@
-# PicoET-Enhance
+# PicoET-Enhance 2.4.1
 
 Eye-tracking enhancement for PICO 4 Pro running PICO OS 5.13.7 with Magisk.
 The installer checks the device's eye-tracking library hashes before installing.
@@ -7,6 +7,11 @@ The installer checks the device's eye-tracking library hashes before installing.
 
 Install the ZIP in Magisk and reboot. Fresh installs enable enhanced mode (`dual/on`)
 at 90/90 Hz. If you switched to normal mode before upgrading, it stays off.
+
+Automatic injection waits for `sys.boot_completed=1` and a Binder response from the
+same eye-tracking service instance. Before starting Bridge or another tracking client
+in enhanced mode, check that `picoet.sh status` reports
+`phase=ready applied_mode=dual applied_gate=on`.
 
 Enhanced mode opens the service-local pupil gate and decouples the expression model:
 each eye's EyeLook, Blink, Wide and brow values are computed and filtered on their own,
@@ -58,19 +63,32 @@ sh /data/adb/modules/picoet-enhance/picoet.sh status
 
 `status` shows `effective_eye_hz` and `effective_mouth_hz`, the rates in effect rather
 than measured output rates. To return to 90/90, delete both files and run `dual`
-again. Reinstalling or upgrading the module keeps the rates you set. Normal mode (`off`) is fully stock.
+again. Rates set in 2.4.0 or later survive reinstalls and upgrades. Only the first
+migration from a version before 2.4.0 clears old overrides to start at 90/90.
+Normal mode (`off`) is fully stock.
 
 ## Status and troubleshooting
 
 Successful enhancement shows `phase=ready applied_mode=dual applied_gate=on` in
-`status`. If loading stops, read the reported reason and logs, then run `dual` again
-after resolving it. Automatic recovery allows one retry per boot or mode command.
+`status`. This describes installed hooks and configured targets. Engines initialized
+before the hooks are not rebuilt or retroactively given profile 0 or startup ET
+settings; the enhancement's own state warms up again.
+
+No safe executor or a temporary signal stop during preparation returns injector exit
+`3`: the watchdog releases the control lock and cools down for 30 seconds without
+consuming either budget. Synchronous and asynchronous unsafe failures share one
+automatic recovery per boot or explicit mode command. A separate limit allows
+injection into at most three consecutive unstable instances, replenished only after
+the same instance stays continuously `ready` for 60 seconds. If automatic loading
+stops, read the reported reason and logs, resolve it, then run `dual` to retry.
 
 - Hook log: `/data/local/tmp/picoet-hook.log`
 - Control logs: `/data/adb/picoet-enhance/*.log`
 - Saved mode/gate: `/data/local/tmp/picoet-mode`, `/data/local/tmp/picoet-gate`
 
-To remove the module, uninstall it in Magisk and reboot.
+To remove the module, uninstall it in Magisk and reboot. Cleanup removes known leaf
+files without recursing into unexpected directories or nested mounts; those
+directories may remain.
 
 See the [project README](https://github.com/WolalaQAQ/PicoET-Enhance#compatibility-and-verification)
 for compatibility and validation details. The package contains the module scripts,

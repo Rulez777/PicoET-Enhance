@@ -18,3 +18,9 @@ Local integration patches:
    failed allocation fails the hook instead of reusing a free ELF gap. This
    applies to all hooks, not just their initial installation order. Both
    defines are set in hook/CMakeLists.txt.
+   cpp/common/bytesig.c: signal chaining recognizes SIG_DFL and SIG_IGN before
+   testing SA_SIGINFO, including when either special disposition has that flag.
+   For SIG_DFL, restore the previous action and re-deliver to the same thread
+   with tgkill; leave the interrupted signal mask unchanged. Protected operations
+   and custom handlers retain their existing behavior. The existing MIT notice
+   is retained.

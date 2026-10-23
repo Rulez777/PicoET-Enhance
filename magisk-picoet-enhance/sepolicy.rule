@@ -3,11 +3,12 @@
 # after changing this file so Magisk rebuilds and loads its preinit policy bundle.
 
 # ptrace injection: magisk (su / service.sh) -> pxreyetrackingservice
-allow magisk pxreyetrackingservice process { ptrace signal sigkill }
+allow magisk pxreyetrackingservice process { ptrace sigkill }
 # /proc/<pid> metadata; PTRACE_PEEKDATA/POKEDATA use process ptrace, not a mem class.
 allow magisk pxreyetrackingservice dir { search open read getattr }
 allow magisk pxreyetrackingservice file { open read getattr }
-allow magisk pxreyetrackingservice fd use
+# readlink(/proc/<pid>/exe) pins injection to the expected service executable.
+allow magisk pxreyetrackingservice lnk_file read
 
 # dlopen traverses /data/adb (adb_data_file) before the module tree (system_file).
 allow pxreyetrackingservice adb_data_file dir search

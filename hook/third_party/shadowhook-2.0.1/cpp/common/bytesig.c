@@ -171,7 +171,16 @@ static void bytesig_handler(int signum, siginfo_t *siginfo, void *context) {
 
 #define CALL_PREVIOUS_SIGNAL_HANDLER(suffix)                            \
   do {                                                                  \
-    if (__predict_true(sig->prev_action##suffix.sa_flags & SA_SIGINFO)) \
+    if (SIG_DFL == sig->prev_action##suffix.sa_handler) {                \
+      /* Leave uc_sigmask untouched: sigreturn restores the prior mask. */ \
+      if (0 != ((bytesig_sigaction##suffix##_t)bytesig_sigaction)(        \
+                   signum, &sig->prev_action##suffix, NULL) ||            \
+          0 != syscall(SYS_tgkill, getpid(),                              \
+                       (pid_t)syscall(SYS_gettid), signum))               \
+        _exit(125);                                                       \
+    } else if (SIG_IGN == sig->prev_action##suffix.sa_handler) {          \
+      break;                                                              \
+    } else if (__predict_true(sig->prev_action##suffix.sa_flags & SA_SIGINFO)) \
       sig->prev_action##suffix.sa_sigaction(signum, siginfo, context);  \
     else if (SIG_DFL != sig->prev_action##suffix.sa_handler &&          \
              SIG_IGN != sig->prev_action##suffix.sa_handler)            \

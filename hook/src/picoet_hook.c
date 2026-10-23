@@ -18,6 +18,7 @@
 #include "shadowhook.h"
 #include "expression/high_rate.h"
 #include "expression/integration.h"
+#include "root_file.h"
 
 extern "C" {
 __attribute__((visibility("default"))) unsigned long long picoet_hook_marker = 0;
@@ -36,7 +37,6 @@ constexpr const char kEyeModeFile[] = "/data/local/tmp/picoet-mode";
 constexpr const char kGateFile[] = "/data/local/tmp/picoet-gate";
 constexpr const char kEyeHzFile[] = "/data/local/tmp/picoet-eye-hz";
 constexpr const char kMouthHzFile[] = "/data/local/tmp/picoet-mouth-hz";
-constexpr const char kRuntimeDir[] = "/data/local/tmp/picoet-runtime";
 constexpr const char kHookLog[] = "/data/local/tmp/picoet-hook.log";
 constexpr const char kPluginSoname[] = "libpxreyetracking.phoenix.so";
 constexpr uint64_t kPluginMinLoadBytes = 0x34279c;
@@ -52,7 +52,7 @@ std::atomic<bool> g_expr_ready {false};
 
 void append_log(const char* msg)
 {
-    int fd = open(kHookLog, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    int fd = picoet_open_root_file(kHookLog, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (fd < 0) return;
     ssize_t written = write(fd, msg, strlen(msg));
     (void)written;
@@ -99,29 +99,42 @@ unsigned long long process_start_ticks()
     unsigned long long ticks = strtoull(p, &end, 10);
     return errno || end == p || *end != ' ' ? 0 : ticks;
 }
-int publish_runtime(const char* phase)
+int publish_record(const char* name, const char* record, size_t len)
 {
-    char path[128], tmp[128], record[160];
-    const char* mode = __atomic_load_n(&picoet_dual_installed, __ATOMIC_RELAXED) ? "dual" : "off";
-    snprintf(path, sizeof(path), "%s/%ld.state", kRuntimeDir, (long)getpid());
-    snprintf(tmp, sizeof(tmp), "%s/%ld.tmp", kRuntimeDir, (long)getpid());
-    int len = snprintf(record, sizeof(record), "2 %ld %llu %s %s %s %u %u\n",
-                       (long)getpid(), g_start_ticks, phase, mode,
-                       picoet_gate_installed ? "on" : "off", g_rates.eye_hz, g_rates.mouth_hz);
-    if (!g_start_ticks || len <= 0 || (size_t)len >= sizeof(record)) return -1;
-    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
-    if (fd < 0) return -1;
+    char tmp[64];
+    snprintf(tmp, sizeof(tmp), "%ld.tmp", (long)getpid());
+    int dir = picoet_open_runtime();
+    if (dir < 0) return -1;
+    int fd = picoet_root_file(openat(dir, tmp,
+        O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600));
+    if (fd < 0) { close(dir); return -1; }
+    if (ftruncate(fd, 0) != 0) { close(fd); close(dir); return -1; }
     size_t done = 0;
-    while (done < (size_t)len) {
+    while (done < len) {
         ssize_t n = write(fd, record + done, (size_t)len - done);
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) break;
         done += (size_t)n;
     }
     int rc = close(fd);
-    if (done == (size_t)len && rc == 0 && rename(tmp, path) == 0) return 0;
-    unlink(tmp);
+    if (done == len && rc == 0 && renameat(dir, tmp, dir, name) == 0) {
+        close(dir);
+        return 0;
+    }
+    unlinkat(dir, tmp, 0);
+    close(dir);
     return -1;
+}
+int publish_runtime(const char* phase)
+{
+    char name[64], record[160];
+    const char* mode = __atomic_load_n(&picoet_dual_installed, __ATOMIC_RELAXED) ? "dual" : "off";
+    snprintf(name, sizeof(name), "%ld.state", (long)getpid());
+    int len = snprintf(record, sizeof(record), "2 %ld %llu %s %s %s %u %u\n",
+                       (long)getpid(), g_start_ticks, phase, mode,
+                       picoet_gate_installed ? "on" : "off", g_rates.eye_hz, g_rates.mouth_hz);
+    if (!g_start_ticks || len <= 0 || (size_t)len >= sizeof(record)) return -1;
+    return publish_record(name, record, static_cast<size_t>(len));
 }
 void report_runtime(const char* phase)
 {
@@ -158,7 +171,7 @@ uint64_t fnv1a64_mem(const unsigned char* p, size_t n)
 // ---- unchanged service-local P1 gate ---------------------------------------
 int read_gate_enabled()
 {
-    int fd = open(kGateFile, O_RDONLY | O_CLOEXEC);
+    int fd = picoet_open_root_file(kGateFile, O_RDONLY, 0);
     if (fd < 0) return 1;
     char buf[8];
     ssize_t n = read(fd, buf, sizeof(buf) - 1);
@@ -366,10 +379,8 @@ struct PipelineScope {
 };
 __attribute__((noinline)) void pipeline_proxy(void* tracking, const void* input)
 {
-    if (!g_expr_ready.load(std::memory_order_acquire)) {
-        g_original_pipeline(tracking, input);
-        return;
-    }
+    // Capture sources even during installation: ready may change before this
+    // stock call reaches trackor, and the input slot is released inside it.
     PipelineScope scope;
     pipeline_frame = {};
     void* owner = load<void*>(tracking, 0xa8);
@@ -557,17 +568,17 @@ void* install_function(uintptr_t base, size_t offset, const char* stage, void* p
             shadowhook_to_errmsg(error));
     return hook;
 }
-void* intercept_one_instruction(uintptr_t base, size_t offset, const char* stage,
-                                shadowhook_interceptor_t callback)
+bool intercept_one_instruction(uintptr_t base, size_t offset, const char* stage,
+                                shadowhook_interceptor_t callback, void** hook)
 {
     auto* site = reinterpret_cast<unsigned char*>(base + offset);
     unsigned char following[20];
     uint32_t original_instruction = load<uint32_t>(site, 0);
     memcpy(following, site + 4, sizeof(following));
-    void* hook = shadowhook_intercept_instr_addr(site, callback, nullptr,
+    *hook = shadowhook_intercept_instr_addr(site, callback, nullptr,
                                                 SHADOWHOOK_INTERCEPT_WITH_FPSIMD_READ_WRITE);
     int error = shadowhook_get_errno();
-    if (hook && memcmp(following, site + 4, sizeof(following))) {
+    if (*hook && memcmp(following, site + 4, sizeof(following))) {
         char expected[41], got[41];
         static const char hex[] = "0123456789abcdef";
         for (unsigned i = 0; i < 20; ++i) {
@@ -580,17 +591,14 @@ void* intercept_one_instruction(uintptr_t base, size_t offset, const char* stage
         log_fmt("intercept rejected stage=%s site=0x%zx required=4-byte original_instruction=0x%08x "
                 "patched_instruction=0x%08x following_expected=%s following_got=%s",
                 stage, offset, original_instruction, load<uint32_t>(site, 0), expected, got);
-        int rc = shadowhook_unintercept(hook);
-        int cleanup_error = shadowhook_get_errno();
-        log_fmt("rollback rejected-intercept site=0x%zx rc=%d errno=%d message=%s",
-                offset, rc, cleanup_error, shadowhook_to_errmsg(cleanup_error));
-        return nullptr;
+        // Keep the handle in the transaction, including when later unhook fails.
+        return false;
     }
-    if (hook) log_fmt("intercept accepted stage=%s site=0x%zx rewrite=4-byte original_instruction=0x%08x",
+    if (*hook) log_fmt("intercept accepted stage=%s site=0x%zx rewrite=4-byte original_instruction=0x%08x",
                       stage, offset, original_instruction);
     else log_fmt("intercept failed stage=%s site=0x%zx errno=%d message=%s",
                   stage, offset, error, shadowhook_to_errmsg(error));
-    return hook;
+    return *hook != nullptr;
 }
 bool patch_word(uintptr_t base, size_t offset, uint32_t word)
 {
@@ -611,13 +619,14 @@ bool patch_word(uintptr_t base, size_t offset, uint32_t word)
     }
     return true;
 }
-void rollback_hook(void* hook, const char* stage, size_t offset, bool instruction)
+bool rollback_hook(void* hook, const char* stage, size_t offset, bool instruction)
 {
-    if (!hook) return;
+    if (!hook) return true;
     int rc = instruction ? shadowhook_unintercept(hook) : shadowhook_unhook(hook);
     int error = shadowhook_get_errno();
     log_fmt("rollback stage=%s site=0x%zx rc=%d errno=%d message=%s", stage, offset, rc, error,
-            shadowhook_to_errmsg(error));
+             shadowhook_to_errmsg(error));
+    return rc == 0;
 }
 int install_plugin(uintptr_t base)
 {
@@ -666,8 +675,10 @@ int install_plugin(uintptr_t base)
         if (!f.hook || !*f.original) { installed = false; break; }
     }
     if (installed) for (auto& i : instructions) {
-        i.hook = intercept_one_instruction(base, i.offset, i.stage, i.callback);
-        if (!i.hook) { installed = false; break; }
+        if (!intercept_one_instruction(base, i.offset, i.stage, i.callback, &i.hook)) {
+            installed = false;
+            break;
+        }
     }
     size_t patched = 0;
     if (installed) {
@@ -688,25 +699,28 @@ int install_plugin(uintptr_t base)
         return 0;
     }
     append_log("plugin install failed; rolling back plugin hooks and patches; service restart required");
+    bool restored = true;
     while (patched) {
         const auto& p = patches[--patched];
-        log_fmt("rollback patch site=0x%zx restored=%d", p.offset, int(patch_word(base, p.offset, p.original)));
+        bool ok = patch_word(base, p.offset, p.original);
+        log_fmt("rollback patch site=0x%zx restored=%d", p.offset, int(ok));
+        if (!ok) restored = false;
     }
     for (size_t n = sizeof(instructions) / sizeof(instructions[0]); n; --n) {
         const auto& i = instructions[n - 1];
-        rollback_hook(i.hook, i.stage, i.offset, true);
+        if (!rollback_hook(i.hook, i.stage, i.offset, true)) restored = false;
     }
     for (size_t n = sizeof(functions) / sizeof(functions[0]); n; --n) {
         const auto& f = functions[n - 1];
-        rollback_hook(f.hook, f.stage, f.offset, false);
+        if (!rollback_hook(f.hook, f.stage, f.offset, false)) restored = false;
     }
-    return -1;
+    return restored ? -1 : -2;
 }
 
 // ---- original mode/bootstrap and asynchronous plugin discovery --------------
 uint32_t read_frequency(const char* path, uint32_t fallback)
 {
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    int fd = picoet_open_root_file(path, O_RDONLY, 0);
     if (fd < 0) {
         if (errno != ENOENT) log_fmt("frequency: open %s failed errno=%d; default=%u", path, errno, fallback);
         return fallback;
@@ -728,7 +742,7 @@ uint32_t read_frequency(const char* path, uint32_t fallback)
 }
 int read_enhanced_mode()
 {
-    int fd = open(kEyeModeFile, O_RDONLY | O_CLOEXEC);
+    int fd = picoet_open_root_file(kEyeModeFile, O_RDONLY, 0);
     if (fd < 0) {
         log_fmt("mode: open %s failed errno=%d; gate only", kEyeModeFile, errno);
         return 0;
@@ -754,7 +768,20 @@ int read_enhanced_mode()
 void on_plugin_found(void* base)
 {
     picoet_plugin_base = (unsigned long long)base;
-    if (install_plugin(reinterpret_cast<uintptr_t>(base)) != 0) {
+    int rc = install_plugin(reinterpret_cast<uintptr_t>(base));
+    if (rc != 0) {
+        if (rc == -2) {
+            // Do not let a service with residual branches/hooks continue running.
+            // This private token also covers failures in the async poll thread,
+            // after the injector has already returned. Schema 2 stays unchanged.
+            char token[64];
+            int len = snprintf(token, sizeof(token), "%ld:%llu\n", (long)getpid(), g_start_ticks);
+            if (!g_start_ticks || len <= 0 || static_cast<size_t>(len) >= sizeof(token) ||
+                publish_record("unsafe", token, static_cast<size_t>(len)) != 0)
+                append_log("unsafe rollback: cannot persist recovery token");
+            append_log("unsafe rollback: terminating service");
+            _exit(5);
+        }
         report_runtime("failed");
         return;
     }
