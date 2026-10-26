@@ -1,0 +1,48 @@
+diff --git a/Sdk/UnifiedPicoTrackingModule.cs b/Sdk/UnifiedPicoTrackingModule.cs
+index f7ff3b5..f97fbd9 100644
+--- a/Sdk/UnifiedPicoTrackingModule.cs
++++ b/Sdk/UnifiedPicoTrackingModule.cs
+@@ -22,6 +22,7 @@ public sealed class UnifiedPicoTrackingModule : ExtTrackingModule
+     private bool timerPolicyChanged, timerPolicyAttempted;
+     private PowerThrottlingState previousTimerPolicy;
+     private double lastError;
++    private TongueReceiver? tongue;
+ 
+     [StructLayout(LayoutKind.Sequential)]
+     private struct PowerThrottlingState { public uint Version, ControlMask, StateMask; }
+@@ -128,6 +129,12 @@ public sealed class UnifiedPicoTrackingModule : ExtTrackingModule
+         {
+             HonorTimerResolution();
+             coordinator = new(config, Log);
++            var marker = Path.Combine(Path.GetDirectoryName(GetType().Assembly.Location)!, "tongue-experiment.enabled");
++            if(File.Exists(marker) && System.Net.IPAddress.TryParse(config.Bridge.IP, out var tongueIp))
++            {
++                try { tongue = new TongueReceiver(tongueIp, Log, File.ReadAllText(marker).Trim()); }
++                catch(Exception ex) { Log($"Tongue receiver unavailable; normal tracking continues: {ex.Message}"); }
++            }
+             wasActive = true;
+         }
+         catch
+@@ -155,7 +162,7 @@ public sealed class UnifiedPicoTrackingModule : ExtTrackingModule
+     }
+     private void StopSources()
+     {
+-        try { coordinator?.Dispose(); }
++        try { tongue?.Dispose(); tongue=null; coordinator?.Dispose(); }
+         finally { coordinator = null; RestoreTimerPolicy(); }
+     }
+     private void RestoreTimerPolicy()
+@@ -186,6 +193,13 @@ public sealed class UnifiedPicoTrackingModule : ExtTrackingModule
+         var data = UnifiedTracking.Data;
+         foreach (var (channel, sdk) in Channels)
+             if (ExpressionFrame.IsEye(channel) ? ownsEye : ownsFace) data.Shapes[(int)sdk].Weight = output.Expressions[channel];
++        if (ownsFace && tongue is not null)
++        {
++            var t=tongue.Poll(data.Shapes[(int)UnifiedExpressions.TongueOut].Weight);
++            data.Shapes[(int)UnifiedExpressions.TongueLeft].Weight=t.Left;
++            data.Shapes[(int)UnifiedExpressions.TongueRight].Weight=t.Right;
++            if(t.Fresh) data.Shapes[(int)UnifiedExpressions.TongueOut].Weight=t.Out; // Native plus high-confidence, negative-trained fallback.
++        }
+         if (!ownsEye) return;
+         data.Eye.Left.Gaze.x = output.Left.GazeX; data.Eye.Left.Gaze.y = output.Left.GazeY;
+         data.Eye.Left.Openness = output.Left.Openness; data.Eye.Left.PupilDiameter_MM = output.Left.PupilMillimeters;

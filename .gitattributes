@@ -7,3 +7,6 @@
 *.txt text eol=lf
 *.md text eol=lf
 *.ps1 text eol=crlf
+
+# Preserve raw calibration samples byte-for-byte on Windows.
+*.pgm binary
