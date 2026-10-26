@@ -11,6 +11,7 @@
 #include <sys/un.h>
 #include "root_file.h"
 #include "tongue_model.h"
+#include "tongue_cnn.h"
 // Personal experimental model. No images saved or transmitted. Explicit root-owned LAN IP opts in.
 static void tongue_live(const void* mat) {
     static std::atomic_flag busy=ATOMIC_FLAG_INIT;
@@ -42,35 +43,18 @@ static void tongue_live(const void* mat) {
     int dx=int(lroundf(float(sum_x)/count_bright-tongue_model::ref_x));
     int dy=int(lroundf(float(sum_y)/count_bright-tongue_model::ref_y));
     if(abs(dx)>60 || abs(dy)>60)return;
-    float v[tongue_model::N],sorted[tongue_model::N];
-    for(unsigned i=0;i<tongue_model::N;i++){
-        int yy=int(tongue_model::offsets[i]/400)+dy,xx=int(tongue_model::offsets[i]%400)+dx;
-        if(xx<0||xx>=400||yy<0||yy>=400)return;
-        sorted[i]=v[i]=sqrtf(pixels[yy*400+xx]/255.f);
-    }
-    std::nth_element(sorted,sorted+tongue_model::N/2,sorted+tongue_model::N);
-    float median=sorted[tongue_model::N/2]; // N odd, matches numpy median.
-    float raw[tongue_model::K]={};
-    for(unsigned i=0;i<tongue_model::N;i++)for(unsigned k=0;k<tongue_model::K;k++){
-        float d=v[i]-median-tongue_model::templates[k][i];raw[k]+=d*d/tongue_model::N;
-    }
-    float score[4]={1,1,1,1};
-    for(unsigned k=0;k<tongue_model::K;k++)score[tongue_model::classes[k]]=std::min(score[tongue_model::classes[k]],raw[k]);
-    unsigned best=0;for(unsigned k=1;k<4;k++)if(score[k]<score[best])best=k;
-    float second=1.f;for(unsigned k=0;k<4;k++)if(k!=best&&score[k]<second)second=score[k];
-    float confidence=(second-score[best])/(second+1.e-9f);
-    float visible=std::min(score[0],std::min(score[2],score[3]));
-    float visibility=(score[1]-visible)/(score[1]+visible+1.e-9f);
-    bool same=best==stable_class && now-last_good<120000000ULL;
-    bool accepted=score[best]<(same?0.003f:0.002f) && (best==1?confidence>0.2f:visibility>(same?0.04f:0.08f));
+    float probability[4];if(!tongue_cnn::infer(pixels,dx,dy,probability))return;
+    float score[4];for(unsigned k=0;k<4;k++)score[k]=-.0003f*logf(std::max(1.e-12f,probability[k]));
+    unsigned best=0;for(unsigned k: {2U,3U})if(probability[k]>probability[best])best=k;
+    float visibility=1-probability[1];
+    bool accepted=visibility>.70f || probability[1]>.85f;
+    if(probability[1]>.85f)best=1;
     bool held=!accepted && stable_class!=1 && now-last_good<120000000ULL;
-    if(accepted){stable_class=best;last_good=now;last_presence=best==1?0:std::max(0.f,visibility);}
+    if(accepted){stable_class=best;last_good=now;last_presence=best==1?probability[1]:visibility;}
     // Class order center,hidden,left,right. Unknown and hidden immediately neutralize.
     // Continuous signed position from relative similarities to left/center/right.
     // Hidden-vs-visible confidence is separate: center transitions must not be rejected as ambiguous direction.
-    float wl=expf(-(score[2]-visible)/0.0007f);
-    float wc=expf(-(score[0]-visible)/0.0007f);
-    float wr=expf(-(score[3]-visible)/0.0007f);
+    float wl=probability[2],wc=probability[0],wr=probability[3];
     float position=std::max(-1.f,std::min(1.f,1.15f*(wr-wl)/(wl+wc+wr+1.e-9f)));
     if(fabsf(position)<.03f)position=0;
     float lo=std::max(0.f,-position),ro=std::max(0.f,position);

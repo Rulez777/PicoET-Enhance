@@ -1,0 +1,27 @@
+{
+  "model": "TinyCNN 1x48x64;3convs+2FC",
+  "train_frames": 36,
+  "validation_frames": 36,
+  "correct": 35,
+  "augmented_validation_correct": 351,
+  "augmented_validation_total": 360,
+  "scope": "same-burst held-out only; not independent/general accuracy",
+  "seconds": 2.2127902507781982,
+  "reference": [
+    117.52903937655914,
+    117.3550300283912
+  ],
+  "errors": [
+    {
+      "file": "Capture04Extra\\frame-06.pgm",
+      "truth": 3,
+      "pred": 1,
+      "prob": [
+        5.774951753016159e-20,
+        1.0,
+        4.67602844465842e-13,
+        1.621963535702875e-10
+      ]
+    }
+  ]
+}

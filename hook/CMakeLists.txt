@@ -69,3 +69,6 @@ target_link_libraries(picoet-inject PRIVATE dl)
 add_executable(picoet-target src/picoet-target.c)
 target_compile_options(picoet-target PRIVATE -O2 -fPIE -Wall -Wextra)
 target_link_libraries(picoet-target PRIVATE dl)
+
+add_executable(tongue-cnn-check src/tongue-cnn-check.cpp)
+target_link_options(tongue-cnn-check PRIVATE -static-libstdc++)
