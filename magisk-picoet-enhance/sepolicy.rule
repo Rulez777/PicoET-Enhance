@@ -24,3 +24,10 @@ allow pxreyetrackingservice system_file file { open read getattr execute map }
 # runtime code patching of the plugin: mprotect RWX / COW-exec (execmod)
 allow pxreyetrackingservice system_lib_file file execmod
 allow pxreyetrackingservice pxreyetrackingservice process execmem
+
+# tongue: Wi-Fi channel to UnifiedPicoModule (UDP 19031, PC subscribes, headset replies) and the
+# optional abstract unix socket used for ADB debugging.
+allow pxreyetrackingservice pxreyetrackingservice udp_socket { create bind read write getattr setopt getopt recvfrom sendto }
+allow pxreyetrackingservice port udp_socket name_bind
+allow pxreyetrackingservice node udp_socket node_bind
+allow pxreyetrackingservice pxreyetrackingservice unix_stream_socket { create bind listen accept read write getattr setopt }
