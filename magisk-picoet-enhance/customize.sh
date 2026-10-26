@@ -36,11 +36,19 @@ if [ "${installed_version_code:-0}" -lt 18 ]; then
     ui_print "- First 2.4.0 migration: eye/mouth targets reset to 90/90 Hz."
 fi
 
+# Tongue left/right (on-headset model): enabled by default. The payload sends it over Wi-Fi to
+# UnifiedPicoModule (UDP 19031, the PC subscribes). Delete this file to switch it off.
+if [ ! -e /data/local/tmp/tongue-live.ip ]; then
+    echo on > /data/local/tmp/tongue-live.ip && chmod 600 /data/local/tmp/tongue-live.ip && chown 0:0 /data/local/tmp/tongue-live.ip
+fi
+
 ui_print "- PicoET-Enhance (runtime ptrace injection; no PICO bytes, no system writes)"
 ui_print "- Fresh-install default: dual/on; upgrades keep off as off/off, otherwise use dual/on."
 ui_print "- Enhanced eye/mouth defaults: 90/90 Hz."
 ui_print "- Saved state: mode=$mode"
 ui_print "- ro.pxr.externalfunc is never touched."
+ui_print "- Tongue L/R: on (needs UnifiedPicoModule with tongue receiver on the PC)."
+ui_print "  Off: rm /data/local/tmp/tongue-live.ip"
 ui_print "- Switch (root, restarts eye/face tracking):"
 ui_print "    sh /data/adb/modules/picoet-enhance/picoet.sh dual|off"
 ui_print "  or the Action button in the Magisk app (normal off/off <-> enhanced dual/on)"

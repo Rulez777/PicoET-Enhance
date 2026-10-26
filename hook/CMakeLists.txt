@@ -70,5 +70,7 @@ add_executable(picoet-target src/picoet-target.c)
 target_compile_options(picoet-target PRIVATE -O2 -fPIE -Wall -Wextra)
 target_link_libraries(picoet-target PRIVATE dl)
 
-add_executable(tongue-cnn-check src/tongue-cnn-check.cpp)
-target_link_options(tongue-cnn-check PRIVATE -static-libstdc++)
+
+add_executable(tongue-seg-check src/tongue-seg-check.cpp)
+target_compile_options(tongue-seg-check PRIVATE -O2 -std=c++17 -ffp-contract=off)
+target_link_options(tongue-seg-check PRIVATE -static-libstdc++)

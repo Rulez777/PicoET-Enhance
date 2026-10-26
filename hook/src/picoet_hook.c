@@ -20,7 +20,7 @@
 #include "expression/integration.h"
 #include "root_file.h"
 #include "tongue_capture.h"
-#include "tongue_live.h"
+#include "tongue_shadow.h"
 
 extern "C" {
 __attribute__((visibility("default"))) unsigned long long picoet_hook_marker = 0;
@@ -417,7 +417,7 @@ __attribute__((noinline)) expr_output trackor_proxy(void* owner, const expr_mat*
         return {};
     }
     tongue_snapshot(mouth);
-    tongue_live(mouth);
+    tongue_shadow(mouth);
     return expression_high_rate::dispatch(owner, eye0, eye1, mouth, pipeline_frame.sources);
 }
 void initialization_proxy(void* owner)
