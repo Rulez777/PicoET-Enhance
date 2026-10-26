@@ -7,11 +7,11 @@ An opt-in feasibility implementation of tongue left/right tracking for one owner
 - Reads the400x400 grayscale mouth Mat at the existing trackor hook. Reuses all upstream firmware guards and root-file protections.
 - Compensates small image translations using the centroid of the saturated nose-like region, masks that region, and compares2095 sampled contrast features against9 personal templates.
 - Estimates continuous signed left/center/right position from relative similarities, with~80ms EMA and120ms hold for isolated uncertain frames. These are similarity-derived values, NOT measured anatomical coordinates.
-- Native PICO TongueOut remains a lower bound. A negative-trained model fallback may maintain extension when native TongueOut loses an extreme pose; confidence enters at0.55 and exits at0.35. Smile/closed-mouth samples are negative templates.
+- Native PICO TongueOut remains a lower bound. A negative-trained model fallback may maintain extension when native TongueOut loses an extreme pose; confidence enters at0.45; weaker positive evidence may retain it. Smile/closed-mouth samples are negative templates.
 - Nominal processing cap20Hz. No measured20Hz guarantee, latency or frame-cost benchmark.
 - Live processing stores/transmits parameters only. Optional bounded image capture is separately armed by a root-owned file; per-label filenames prevent silent collisions after a service restart.
-- Streams24-byte TNG1 records over abstract Unix socket pico_tongue_live. Authenticated ADB forwards local TCP19031 to it. No inbound Windows firewall exception or raw-image stream is needed.
-- Companion receiver checks record structure/finite values, bounds per-update work, reconnects after service restarts, and neutralizes model output after350ms without data.
+- Streams24-byte TNG2 records over abstract Unix socket pico_tongue_live. Authenticated ADB forwards local TCP19031 to it. No inbound Windows firewall exception or raw-image stream is needed.
+- Companion receiver checks record structure/finite values, bounds per-update work, reconnects after service restarts, and neutralizes model output after350ms without data. TNG2 packs explicit-negative/uncertain flags into the high two sequence bits (low30bits are the counter). An explicit negative clears immediately; uncertain frames may hold the last positive at most250ms.
 
 ## Evidence and remaining failures
 
@@ -31,6 +31,8 @@ Build with the repository's hook/build-hook.ps1 using Android NDK/CMake/Ninja. D
 
 For live opt-in create a root-owned0600 file /data/local/tmp/tongue-live.ip containing any valid private IPv4 (legacy enable-file format; no UDP is used). For PC integration add pc-integration/TongueReceiver.cs to UnifiedPicoModule and apply UnifiedPicoTrackingModule.patch, building with pinned VRCFT5.4.5 SDK. Create tongue-experiment.enabled beside the module containing an absolute writable path for its JSON diagnostic file. Forward `adb forward tcp:19031 localabstract:pico_tongue_live` over an already-authorized connection. Re-forward/re-authorize after reconnect/reboot if needed; never expose ADB to the Internet.
 
-Receiver checks: `dotnet run --project pc-integration/tests/ReceiverChecks.csproj -c Release`. They cover TCP fragmentation, malformed/NaN rejection, high-confidence fallback, negative reset, fractional gating and stale neutralization.
+Receiver checks: `dotnet run --project pc-integration/tests/ReceiverChecks.csproj -c Release`. They cover TCP fragmentation, malformed/NaN rejection, high-confidence fallback, negative reset, bounded uncertain hold, fractional gating and stale neutralization.
 
 Disable by removing the headset enable file and PC marker; restore the backed-up payload/hashes and companion DLL to return fully to stock. Production development should replace personal templates with robust tongue segmentation/regression and extend BridgeSplit with negotiated fields instead of relying on ADB.
+
+Latest synchronized held-left check: PC Out1,Left~0.80-0.92,Right0 despite nativeOut~0.00-0.25. Owner confirmed the avatar tongue was visible in this check, while still reporting intermittent disappearance. Physically holding the headset did not remove the problem. TNG2 bounded uncertain holding subsequently added; final worn retest pending.

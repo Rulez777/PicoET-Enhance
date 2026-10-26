@@ -80,7 +80,7 @@ static void tongue_live(const void* mat) {
         constexpr float alpha=.465f;
         left+=(lo-left)*alpha;right+=(ro-right)*alpha;out+=(oo-out)*alpha;
     }
-    struct Packet{char magic[4];unsigned seq;float l,r,o,c;} packet{{'T','N','G','1'},++sequence,left,right,out,accepted?last_presence:(held?last_presence:0.f)};
+    struct Packet{char magic[4];unsigned seq;float l,r,o,c;} packet{{'T','N','G','2'},((++sequence)&0x3fffffffU)|(accepted?(best==1?0x80000000U:0U):0x40000000U),left,right,out,accepted?last_presence:(held?last_presence:0.f)};
     static_assert(sizeof(Packet)==24,"TNG1 packet ABI");
     if(sock<0){
         sock=socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK,0);
