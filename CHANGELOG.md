@@ -2,6 +2,15 @@
 
 English | [简体中文](CHANGELOG_zh.md)
 
+## [2.4.2-tongue.2] - 2026-10-27 (fork Rulez777/PicoET-Enhance)
+
+### Added
+- Tongue Calibration app bundled in the module (installed on install and re-checked at boot): per-user angle/threshold calibration, on-headset retraining of the mask head (kept only if it tests better on held-out frames), Restore standard.
+- Mask-size hysteresis: a tongue appears at the threshold and stays while it keeps 60% of it (far-side tongues no longer flicker out).
+
+### Fixed
+- uninstall.sh tongue cleanup line; uninstall also removes the app, calibration and personal model.
+
 ## [2.4.2-tongue.1] - 2026-10-27 (fork Rulez777/PicoET-Enhance)
 
 ### Added

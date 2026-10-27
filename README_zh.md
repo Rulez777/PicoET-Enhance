@@ -1,16 +1,16 @@
 # PicoET-Enhance
 
-<p align="center"><a href="docs/media/tongue-demo.mp4"><img src="docs/media/tongue-demo.gif" width="480" alt="Tongue tracking demo"></a><br><sub>PICO 4 Enterprise 舌头左右追踪，在头显上计算（v2.4.2-tongue.1）。点击图片查看原画质视频。</sub></p>
+<p align="center"><a href="docs/media/tongue-demo.mp4"><img src="docs/media/tongue-demo.gif" width="480" alt="Tongue tracking demo"></a><br><sub>PICO 4 Enterprise 舌头左右追踪，在头显上计算（v2.4.2-tongue.2）。点击图片查看原画质视频。</sub></p>
 
 [English](README.md) | 简体中文
 
 面向 PICO 4 Pro 的眼动增强 Magisk 模块：打开眼动服务的逐眼门控以输出真实瞳孔数据，解除面部表情模型的跨眼耦合让左右眼各自计算，把眼部与嘴部表情目标频率从原厂约 24 Hz 提高到默认 90/90 Hz，并（本分支）增加在头显上计算的**舌头左右追踪**。配合 [PicoFacialBridge](https://github.com/WolalaQAQ/PicoFacialBridge) 和 [UnifiedPicoModule](https://github.com/WolalaQAQ/UnifiedPicoModule) 使用。
 
-> v2.4.2-tongue.1（基于 v2.4.2 的分支）· PICO 4 Pro / PICO 4 Enterprise · PICO OS 5.13.7 · [更新日志](CHANGELOG_zh.md) · [舌头说明（英文）](TONGUE.md)
+> v2.4.2-tongue.2（基于 v2.4.2 的分支）· PICO 4 Pro / PICO 4 Enterprise · PICO OS 5.13.7 · [更新日志](CHANGELOG_zh.md) · [舌头说明（英文）](TONGUE.md)
 
 ## 本分支：舌头左右
 
-下载：[v2.4.2-tongue.1](https://github.com/Rulez777/PicoET-Enhance/releases/tag/v2.4.2-tongue.1)；说明：[TONGUE.md](TONGUE.md)（英文）。
+下载：[v2.4.2-tongue.2](https://github.com/Rulez777/PicoET-Enhance/releases/latest)；说明：[TONGUE.md](TONGUE.md)（英文）。
 **个人模型**：仅用一个人的面部训练，其他人可能识别不准；未实现上下方向。
 
 ## 它做什么
@@ -72,18 +72,18 @@ Windows 11 可能会忽略官方宿主申请的 1 ms 定时器精度，这时每
 
 ## 安装
 
-1. 从本分支 [Releases](https://github.com/Rulez777/PicoET-Enhance/releases) 下载 `magisk-picoet-enhance-v2.4.2-tongue.1.zip`（不含舌头的上游版本：[WolalaQAQ/PicoET-Enhance](https://github.com/WolalaQAQ/PicoET-Enhance/releases)）。
+1. 从本分支 [Releases](https://github.com/Rulez777/PicoET-Enhance/releases) 下载 `magisk-picoet-enhance-v2.4.2-tongue.2.zip`（不含舌头的上游版本：[WolalaQAQ/PicoET-Enhance](https://github.com/WolalaQAQ/PicoET-Enhance/releases)）。
 2. 在 Magisk App 中通过“从本地安装”刷入，或使用命令行：
 
    ```sh
-    adb push magisk-picoet-enhance-v2.4.2-tongue.1.zip /data/local/tmp/
-    adb shell su -c 'magisk --install-module /data/local/tmp/magisk-picoet-enhance-v2.4.2-tongue.1.zip'
+    adb push magisk-picoet-enhance-v2.4.2-tongue.2.zip /data/local/tmp/
+    adb shell su -c 'magisk --install-module /data/local/tmp/magisk-picoet-enhance-v2.4.2-tongue.2.zip'
    ```
 
 3. 重启头显。
 4. 舌头：用 Release 中的 `UnifiedPicoModule.dll` 替换 VRCFaceTracking `CustomLibs` 模块目录中的同名文件。它使用已配置的 Bridge IP；数据到达后 DLL 旁的 `tongue-status.json` 显示 `"fresh":true`。模型需要 TongueLeft/TongueRight 参数。
 
-首次安装默认启用增强模式 `dual/on` 和舌头，重启后以 90/90 Hz 运行。如果升级前已切到普通模式，升级后仍保持关闭。
+首次安装默认启用增强模式 `dual/on` 和舌头，重启后以 90/90 Hz 运行，并安装 **Tongue Calibration** 校准应用（运行一次约 20 秒）。如果升级前已切到普通模式，升级后仍保持关闭。
 
 ## 使用
 
@@ -178,9 +178,9 @@ pwsh -File build-picoet-enhance.ps1            # 打包成 Magisk zip
 
 ## 待做
 
-- [x] **舌头左右**（本分支 v2.4.2-tongue.1）：头显端分割模型，经 Wi-Fi 发送给 UnifiedPicoModule。见 [TONGUE.md](TONGUE.md)。
+- [x] **舌头左右**（本分支 v2.4.2-tongue.2）：头显端分割模型，经 Wi-Fi 发送给 UnifiedPicoModule。见 [TONGUE.md](TONGUE.md)。
 - [ ] **舌头上下**：现有数据下无法可靠区分（向下与直伸相似；两侧的上下与左右混淆）。需要学习型输出头和多次佩戴的录制数据（[详情](research/tongue-v2/README.md#updown-not-implemented)）。
-- [ ] **适配其他用户**：当前权重只用一个人的面部训练。计划让用户用载荷的 shadow 模式录制自己的帧并在本地微调（训练工具见 `research/tongue-v2/training`）。
+- [x] **适配其他用户**：随附的 Tongue Calibration 应用可按人校准方向，并可在头显上重新训练模型（仅在验证更好时保留；“恢复标准”可撤销）。
 - [ ] **面捕不滤波输出**：把端侧 FaceTrackor 的时间平滑做成可选关闭，让模块直接转发逐帧原始面部数据。时间滤波改由 PC 端按需处理，端侧只负责发原始值。
 
 ## 反馈

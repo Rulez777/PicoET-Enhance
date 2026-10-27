@@ -20,4 +20,7 @@ rm -f /data/local/tmp/picoet-mode /data/local/tmp/picoet-gate /data/local/tmp/pi
 rm -f /data/local/tmp/picoet-eye-hz /data/local/tmp/picoet-mouth-hz
 resetprop --delete picoet.enhance.mode 2>/dev/null
 resetprop --delete picoet.enhance.gate 2>/dev/null
-rm -f /data/local/tmp/tongue-live.ip /data/local/tmp/tongue-live.status /data/local/tmp/tongue-shadow.arm \n    /data/local/tmp/tongue-shadow.log /data/local/tmp/tongue-shadow.frames
+rm -f /data/local/tmp/tongue-live.ip /data/local/tmp/tongue-live.status /data/local/tmp/tongue-shadow.arm \
+    /data/local/tmp/tongue-shadow.log /data/local/tmp/tongue-shadow.frames \
+    /data/local/tmp/tongue-calibration /data/local/tmp/tongue-head.bin
+pm uninstall dev.picoet.tonguecal >/dev/null 2>&1

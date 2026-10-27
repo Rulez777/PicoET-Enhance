@@ -1,0 +1,4 @@
+out/
+out-build.log
+*.apk
+*.keystore
