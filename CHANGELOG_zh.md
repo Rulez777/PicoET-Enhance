@@ -2,6 +2,13 @@
 
 [English](CHANGELOG.md) | 简体中文
 
+## [2.4.2-tongue.1] - 2026-10-27（分支 Rulez777/PicoET-Enhance）
+
+### 新增
+- 舌头左右：头显端 MobileNetV3-small 分割模型（C++ 移植，大核 4-7，约 20 Hz），输出 TongueLeft/TongueRight 及 TongueOut 补充值，经 Wi-Fi 发送给 UnifiedPicoModule（UDP 19031，由 PC 订阅，无需 ADB）。默认通过 `/data/local/tmp/tongue-live.ip` 开启。见 `TONGUE.md`。
+- `sepolicy.rule`：舌头通道的 UDP 套接字规则（未在 enforcing 头显上测试）。
+- 可选 shadow 模式（`/data/local/tmp/tongue-shadow.arm`）保存 200x200 嘴部帧用于重新训练。
+
 ## [2.4.2] - 2026-10-24
 
 ### 修复
