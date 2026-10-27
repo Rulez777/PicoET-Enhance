@@ -6,6 +6,13 @@
 
 > v2.4.2 · PICO 4 Pro / PICO OS 5.13.7 · [更新日志](CHANGELOG_zh.md)
 
+## 本分支：舌头左右（v2.4.2-tongue.1）
+
+PICO 面部追踪只输出 TongueOut。本分支在**头显上**用小型分割模型从嘴部摄像头计算 **TongueLeft / TongueRight**，
+通过 Wi-Fi 发送给 VRCFaceTracking（无需 ADB、PC 不处理图像、无需防火墙规则），眼部和面部追踪保持 90/90 Hz 目标。
+下载：[v2.4.2-tongue.1](https://github.com/Rulez777/PicoET-Enhance/releases/tag/v2.4.2-tongue.1)；说明：[TONGUE.md](TONGUE.md)（英文）。
+**个人模型**：仅用一个人的面部训练，其他人可能识别不准；未实现上下方向。
+
 ## 它做什么
 
 PICO 4 Pro 的固件会对左右眼分别追踪，但面部表情模型在输出前把两眼混合，一侧的 Blink、视线方向、Wide 和眉部会受另一侧输入影响。眼部相机以 90 Hz 运行，这些表情却每秒只更新约 24 次。本模块在运行期做三处改动：
