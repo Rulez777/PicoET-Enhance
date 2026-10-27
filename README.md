@@ -1,6 +1,6 @@
 # PicoET-Enhance
 
-<p align="center"><a href="docs/media/tongue-demo.mp4"><img src="docs/media/tongue-demo.gif" width="480" alt="Tongue tracking demo"></a><br><sub>Tongue left/right on PICO 4 Enterprise, tracked on the headset (v2.4.2-tongue.1). Full-quality video: click the image.</sub></p>
+<p align="center"><a href="docs/media/tongue-demo.mp4"><img src="docs/media/tongue-demo.gif" width="480" alt="Tongue tracking demo"></a><br><sub>Tongue left/right on PICO 4 Enterprise, tracked on the headset (v2.4.2-tongue.1). </sub></p>
 
 English | [简体中文](README_zh.md)
 
