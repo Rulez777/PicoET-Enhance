@@ -2,6 +2,13 @@
 
 English | [简体中文](CHANGELOG_zh.md)
 
+## [2.4.2-tongue.1] - 2026-10-27 (fork Rulez777/PicoET-Enhance)
+
+### Added
+- Tongue left/right: on-headset MobileNetV3-small segmentation model (C++ port, big cores 4-7, ~20 Hz), TongueLeft/TongueRight plus a TongueOut fallback, delivered to UnifiedPicoModule over Wi-Fi (UDP 19031, the PC subscribes; no ADB). On by default via `/data/local/tmp/tongue-live.ip`. See `TONGUE.md`.
+- `sepolicy.rule`: UDP socket rules for the tongue channel (untested on an enforcing headset).
+- Optional shadow mode (`/data/local/tmp/tongue-shadow.arm`) saves 200x200 mouth frames for retraining.
+
 ## [2.4.2] - 2026-10-24
 
 ### Fixed
