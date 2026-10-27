@@ -74,3 +74,11 @@ target_link_libraries(picoet-target PRIVATE dl)
 add_executable(tongue-seg-check src/tongue-seg-check.cpp)
 target_compile_options(tongue-seg-check PRIVATE -O2 -std=c++17 -ffp-contract=off)
 target_link_options(tongue-seg-check PRIVATE -static-libstdc++)
+
+add_executable(tongue-train-check src/tongue-train-check.cpp)
+target_compile_options(tongue-train-check PRIVATE -O2 -std=c++17 -ffp-contract=off)
+target_link_options(tongue-train-check PRIVATE -static-libstdc++)
+
+add_executable(tongue-train-accept-check src/tongue-train-accept-check.cpp)
+target_compile_options(tongue-train-accept-check PRIVATE -O2 -std=c++17 -ffp-contract=off)
+target_link_options(tongue-train-accept-check PRIVATE -static-libstdc++)

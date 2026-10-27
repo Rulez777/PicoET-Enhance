@@ -20,6 +20,7 @@ set_perm "$MODPATH/uninstall.sh" 0 0 0755
 set_perm "$MODPATH/bin/picoet-inject" 0 0 0755
 set_perm "$MODPATH/lib/libpicoet_hook.so" 0 0 0644
 set_perm "$MODPATH/hashes.sh" 0 0 0644
+set_perm "$MODPATH/tongue-app.sh" 0 0 0755
 
 # An upgrade is staged until reboot. Keep the running instance's actual state;
 # service.sh clears stale reports and republishes the replacement after boot.
@@ -41,6 +42,9 @@ fi
 if [ ! -e /data/local/tmp/tongue-live.ip ]; then
     echo on > /data/local/tmp/tongue-live.ip && chmod 600 /data/local/tmp/tongue-live.ip && chown 0:0 /data/local/tmp/tongue-live.ip
 fi
+# Bundled Tongue Calibration app: install now; service.sh re-checks it after every boot.
+sh "$MODPATH/tongue-app.sh" "$MODPATH" && ui_print "- Tongue Calibration app installed (apps list: Tongue Calibration)." \
+    || ui_print "- Tongue Calibration app will be installed after the reboot."
 
 ui_print "- PicoET-Enhance (runtime ptrace injection; no PICO bytes, no system writes)"
 ui_print "- Fresh-install default: dual/on; upgrades keep off as off/off, otherwise use dual/on."
