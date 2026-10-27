@@ -6,6 +6,20 @@ An eye-tracking enhancement Magisk module for the PICO 4 Pro: it opens the eye-t
 
 > v2.4.2 · PICO 4 Pro / PICO OS 5.13.7 · [Changelog](CHANGELOG.md)
 
+## This fork: tongue left/right (v2.4.2-tongue.1)
+
+PICO's face tracking reports only TongueOut. This fork adds **TongueLeft / TongueRight** from the
+mouth camera, computed **on the headset** by a small segmentation model, and sends it to
+VRCFaceTracking over Wi-Fi (no ADB, no PC image processing, no firewall rules). Face and eye
+tracking keep their 90/90 Hz targets.
+
+- Download: [release v2.4.2-tongue.1](https://github.com/Rulez777/PicoET-Enhance/releases/tag/v2.4.2-tongue.1)
+  (Magisk module zip + `UnifiedPicoModule.dll` with the tongue receiver + training data).
+- How it works, install, evidence and retraining: [TONGUE.md](TONGUE.md),
+  [research/tongue-v2](research/tongue-v2/README.md).
+- PC side source: [Rulez777/UnifiedPicoModule `tongue/wifi-receiver`](https://github.com/Rulez777/UnifiedPicoModule/tree/tongue/wifi-receiver).
+- **Personal model:** trained on one person's face; it may misread other faces. Up/down is not implemented.
+
 ## What it does
 
 The PICO 4 Pro firmware tracks each eye, but its facial expression model mixes the two eyes before output, so blink, look direction, wideness and brows for one eye depend on the other eye's inputs. It also updates these expressions only about 24 times a second, although the eye cameras run at 90 Hz. This module changes three things at runtime:
