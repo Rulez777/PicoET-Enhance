@@ -14,8 +14,9 @@ VRCFaceTracking over Wi-Fi. No ADB, no PC-side image processing, no firewall rul
    installs everything on the headset, including the **Tongue Calibration** app (in the apps list).
    PicoET-Enhance's root and firmware requirements apply unchanged (see README).
 2. **PC:** replace `UnifiedPicoModule.dll` in your VRCFaceTracking `CustomLibs` module folder with
-   the one from the release (UnifiedPicoModule 0.4.0 + tongue receiver). It uses the
-   PicoFacialBridge headset IP you already configured.
+   the one from the release (UnifiedPicoModule 0.4.0 + tongue receiver). It finds the headset the
+   same way as PicoFacialBridge (auto-discovery, or `Bridge.IP` if you set one). If your face comes
+   through PICO Connect streaming instead, set `Bridge.IP` to the headset's IP.
 
 Start PicoFacialBridge as usual. Avatars need TongueLeft/TongueRight (Unified Expressions).
 Tongue is on by default; to switch it off delete `/data/local/tmp/tongue-live.ip` (root).
