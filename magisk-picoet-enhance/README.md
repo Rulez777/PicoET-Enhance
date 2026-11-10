@@ -1,7 +1,9 @@
 # PicoET-Enhance 2.4.2
 
-Eye-tracking enhancement for PICO 4 Pro running PICO OS 5.13.7 with Magisk.
-The installer checks the device's eye-tracking library hashes before installing.
+Eye-tracking enhancement and tongue left/right for PICO 4 Pro / PICO 4 Enterprise with Magisk.
+It installs on any firmware: the eye/face enhancement runs on PICO OS 5.13.7 (the installer checks
+the device's eye-tracking library hashes and tells you), the tongue and the pupil gate on any build.
+The zip also installs the Tongue Calibration app and PicoFacialBridge v0.6.0.
 
 ## Installation and defaults
 

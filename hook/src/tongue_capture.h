@@ -7,6 +7,9 @@
 #include "root_file.h"
 // Explicit opt-in only. Maximum sixty frames per service lifetime; no background stream.
 static void tongue_snapshot(const void* mat) {
+#ifndef PICOET_TONGUE_DIAG
+    (void)mat;   // research capture: diagnostic builds only
+#else
     static std::atomic_flag busy = ATOMIC_FLAG_INIT;
     static unsigned count = 0, pose_count = 0;
     static char previous_label[32] = {};
@@ -50,4 +53,5 @@ static void tongue_snapshot(const void* mat) {
         if(write(fd,line,out.iov_len)!=ssize_t(out.iov_len))break;
     }
     close(fd);
+#endif
 }

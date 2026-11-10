@@ -48,6 +48,11 @@ target_compile_options(picoet_obj PRIVATE
     -std=c++17 -O2 -fPIC -fexceptions -fvisibility=hidden -Wall -Wextra
     -fno-omit-frame-pointer -ffp-contract=off)
 target_include_directories(picoet_obj PRIVATE ${SH_DIR}/include)
+# Tongue diagnostics (per-frame log, raw frame capture) are compiled out of release builds.
+option(PICOET_TONGUE_DIAG "Build the tongue diagnostics (shadow log, frame capture)" OFF)
+if(PICOET_TONGUE_DIAG)
+    target_compile_definitions(picoet_obj PRIVATE PICOET_TONGUE_DIAG)
+endif()
 
 add_library(picoet_hook SHARED
     $<TARGET_OBJECTS:shadowhook_obj>

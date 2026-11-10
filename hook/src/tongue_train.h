@@ -23,6 +23,7 @@
 #include <unistd.h>
 #include <sys/syscall.h>
 #include "root_file.h"
+#include "tongue_cpu.h"
 #include "tongue_seg.h"
 
 namespace tongue_train {
@@ -124,15 +125,18 @@ static std::vector<uint8_t> largest_blob(const std::vector<uint8_t>& m) {
     for (int i = 0; i < 56 * 56; i++) out[i] = comp[i] == best && best >= 0;
     return out;
 }
-// Tongue mask for a pose frame: brighter than the open-mouth reference by 20+ grey levels and not
-// glare, as 56x56 cells (>half covered), joined with the model's own mask, largest blob.
-static std::vector<uint8_t> auto_mask(const Sample& s, const std::vector<float>& open_ref) {
+// Tongue mask for a pose frame: brighter than the open-mouth reference by more than `rise` grey
+// levels (set from this person's own open-mouth noise) and not glare, as 56x56 cells (>half
+// covered), joined with the model's own mask, largest blob. Cells in the person's suppression map
+// (lip, beard edge...) never enter a tongue mask, so retraining cannot learn them as tongue.
+static std::vector<uint8_t> auto_mask(const Sample& s, const std::vector<float>& open_ref, float rise) {
     std::vector<uint8_t> m(56 * 56, 0);
     for (int gy = 0; gy < 56; gy++) for (int gx = 0; gx < 56; gx++) {
+        if (tongue_seg::suppress[gy * 56 + gx]) continue;
         int y0 = gy * 200 / 56, y1 = (gy + 1) * 200 / 56, x0 = gx * 200 / 56, x1 = (gx + 1) * 200 / 56, hit = 0, all = 0;
         for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) {
             float v = s.frame[y * 200 + x]; all++;
-            hit += v < 235 && v - open_ref[y * 200 + x] > 20;
+            hit += v < 235 && v - open_ref[y * 200 + x] > rise;
         }
         m[gy * 56 + gx] = hit * 2 > all || s.model_mask[gy * 56 + gx];
     }
@@ -221,9 +225,11 @@ struct Adam {
 // ---------- evaluation ----------
 struct Eval { float tp = 0, fp = 0, left = 0, center = 0, right = 0; bool direction = false; float score = -9; };
 static float median(std::vector<float> v) { if (v.empty()) return NAN; std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end()); return v[v.size() / 2]; }
-static Eval evaluate(const tongue_seg::Head& h, const std::vector<const Sample*>& set, tongue_seg::Context& ctx) {
+static Eval evaluate(const tongue_seg::Head& h, const std::vector<const Sample*>& set, tongue_seg::Context& ctx,
+                     int min_area) {
     static float logits[56 * 56];
-    const tongue_seg::Calibration fixed{.33f, .66f, 1.11f, 100};   // same yardstick for old and new
+    // Same yardstick for old and new: this person's size threshold and suppression map.
+    const tongue_seg::Calibration fixed{.33f, .66f, 1.11f, min_area};
     int npos = 0, nneg = 0, tp = 0, fp = 0; std::vector<float> a[6];
     for (const Sample* s : set) {
         tongue_seg::features(ctx, s->frame.data());
@@ -242,8 +248,7 @@ static Eval evaluate(const tongue_seg::Head& h, const std::vector<const Sample*>
 
 // ---------- the training run (own thread, big cores 5-7) ----------
 static void* run(void*) {
-    cpu_set_t set; CPU_ZERO(&set); for (int c = 5; c < 8; c++) CPU_SET(c, &set);
-    sched_setaffinity(int(syscall(SYS_gettid)), sizeof(set), &set);
+    tongue_cpu::pin_fast(1);   // fast cores except the first one, which inference keeps
     std::vector<Sample> data;
     { std::lock_guard<std::mutex> g(lock); data = samples; }
     auto fail = [] { state = FAILED; return nullptr; };
@@ -251,6 +256,12 @@ static void* run(void*) {
     for (auto& s : data) if (s.label == OPEN) { for (int i = 0; i < 200 * 200; i++) open_ref[i] += s.frame[i]; nopen++; }
     if (nopen < 10) return fail();
     for (float& v : open_ref) v /= nopen;
+    // This person's own open-mouth noise sets how much brighter a tongue pixel has to be.
+    double noise = 0; long npix = 0;
+    for (auto& s : data) if (s.label == OPEN)
+        for (int i = 0; i < 200 * 200; i += 7) { noise += std::fabs(s.frame[i] - open_ref[i]); npix++; }
+    const float rise = std::max(10.f, std::min(35.f, float(4 * noise / std::max(npix, 1L))));
+    const int min_area = tongue_seg::calibration.min_area;
     std::vector<const Sample*> train, hold; std::vector<std::vector<uint8_t>> masks; std::vector<int> train_mask;
     int seen[6] = {};
     for (auto& s : data) {
@@ -258,9 +269,9 @@ static void* run(void*) {
         if (held_out) { hold.push_back(&s); continue; }
         std::vector<uint8_t> m(56 * 56, 0);
         if (s.label >= CENTER) {
-            m = auto_mask(s, open_ref);
+            m = auto_mask(s, open_ref, rise);
             int area = 0; for (uint8_t v : m) area += v;
-            if (area < 60) continue;   // could not find the tongue in this frame: do not teach from it
+            if (area < 40) continue;   // could not find the tongue in this frame: do not teach from it
         }
         train.push_back(&s); masks.push_back(std::move(m));
     }
@@ -270,7 +281,7 @@ static void* run(void*) {
     tongue_seg::Context ctx;
     tongue_seg::Head old_head;
     if (!load_head(old_head)) old_head = tongue_seg::standard_head();
-    Eval before = evaluate(old_head, hold, ctx);
+    Eval before = evaluate(old_head, hold, ctx, min_area);
     old_score = before.score;
 
     tongue_seg::Head h = tongue_seg::standard_head();
@@ -292,7 +303,7 @@ static void* run(void*) {
         progress = .9f * (step + 1) / steps;
     }
     for (float x : flatten(h)) if (!std::isfinite(x)) return fail();
-    Eval after = evaluate(h, hold, ctx);
+    Eval after = evaluate(h, hold, ctx, min_area);
     new_score = after.score;
     progress = .95f;
     bool better = after.direction && after.score >= before.score + .05f && after.fp <= before.fp + .02f;
@@ -304,7 +315,7 @@ static void* run(void*) {
     // Personal calibration from the new head on every recorded frame (same rule as the app).
     static float logits[56 * 56];
     std::vector<float> ang[6]; std::vector<int> negA, posA;
-    const tongue_seg::Calibration probe{.33f, .66f, 1.11f, 100};
+    const tongue_seg::Calibration probe{.33f, .66f, 1.11f, min_area};
     for (auto& s : data) {
         tongue_seg::features(ctx, s.frame.data());
         tongue_seg::head_forward(h, ctx, logits);

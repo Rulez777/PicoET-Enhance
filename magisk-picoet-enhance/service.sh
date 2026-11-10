@@ -20,8 +20,8 @@ while :; do
     sleep 1
 done
 
-# Bundled Tongue Calibration app: install or update it if this module ships a different version.
-/system/bin/sh "$MODDIR/tongue-app.sh" "$MODDIR" &
+# Bundled apps (Tongue Calibration, PicoFacialBridge): install or update if missing or older.
+/system/bin/sh "$MODDIR/apps.sh" "$MODDIR" &
 
 # Always reconcile through the same readiness/mapping checks as a manual ensure.
 # This also observes async plugin completion, clears a dead PID's properties and

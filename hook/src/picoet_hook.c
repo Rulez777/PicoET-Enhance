@@ -21,6 +21,7 @@
 #include "root_file.h"
 #include "tongue_capture.h"
 #include "tongue_shadow.h"
+#include "tongue_compat.h"
 
 extern "C" {
 __attribute__((visibility("default"))) unsigned long long picoet_hook_marker = 0;
@@ -188,7 +189,7 @@ int my_isBusinessDev()
     if (n <= 3 || (n % 1000) == 0) log_fmt("P1 gate: isBusinessDev call #%llu -> 1", n);
     return 1;
 }
-int install_gate_hook()
+int install_gate_hook(bool treat_as_unverified)
 {
     append_log("P1 init: libpicoet_hook.so constructed");
     uint64_t h = 0;
@@ -196,11 +197,13 @@ int install_gate_hook()
         append_log("P1 guard: cannot read service lib; skip");
         return -1;
     }
-    if (h != kServiceFnv1a64) {
-        log_fmt("P1 guard: service lib hash 0x%016llX != known; skip", (unsigned long long)h);
-        return -1;
-    }
-    append_log("P1 guard: service lib hash matches known firmware");
+    // Returns 0 on the verified firmware, 1 on any other one. The per-eye gate is hooked by its
+    // exported symbol name, not by address, so it is attempted on every firmware; the expression
+    // patches (fixed addresses) are only ever applied on the verified build.
+    const bool known = h == kServiceFnv1a64 && !treat_as_unverified;
+    if (known) append_log("P1 guard: service lib hash matches known firmware");
+    else log_fmt("P1 guard: service lib hash 0x%016llX is not the verified build; no expression patches, "
+                 "gate by symbol name, tongue by code pattern", (unsigned long long)h);
     int err = shadowhook_init(SHADOWHOOK_MODE_UNIQUE, false);
     if (err != SHADOWHOOK_ERRNO_OK && err != SHADOWHOOK_ERRNO_DUP) {
         log_fmt("P1: shadowhook_init failed errno=%d", err);
@@ -208,18 +211,18 @@ int install_gate_hook()
     }
     if (!g_gate_requested) {
         append_log("P1 gate: disabled by gate file; skipping gate hook");
-        return 0;
+        return known ? 0 : 1;
     }
     void* orig = nullptr;
     void* stub = shadowhook_hook_sym_name(kServiceLibSoname, kGateSym,
                                           (void*)my_isBusinessDev, &orig);
     if (!stub || !orig) {
         log_fmt("P1: gate hook failed errno=%d", shadowhook_get_errno());
-        return -1;
+        return known ? -1 : 1;   // unknown firmware without that symbol: stock eye data, tongue still runs
     }
     __atomic_store_n(&picoet_gate_installed, 1, __ATOMIC_RELEASE);
     append_log("P1 gate hook installed (isBusinessDev -> 1)");
-    return 0;
+    return known ? 0 : 1;
 }
 int phoenix_cb(struct dl_phdr_info* info, size_t, void* opaque)
 {
@@ -240,6 +243,84 @@ void* find_phoenix()
     void* base = nullptr;
     dl_iterate_phdr(phoenix_cb, &base);
     return base;
+}
+
+// ---- tongue only: any firmware, no enhancement hooks (tongue_compat.h) ------
+// Used when the firmware is not the verified build (or its plugin guard fails), and when the
+// root-owned switch file below exists (it makes a verified firmware behave like an unverified
+// one). No expression patch is applied: FaceTrackor is found by its code and only observed for
+// the mouth image.
+constexpr const char kTongueOnlyFile[] = "/data/local/tmp/picoet-tongue-only";
+void report_runtime(const char* phase);
+struct PluginText { uintptr_t begin = 0; size_t size = 0; };
+int phoenix_text_cb(struct dl_phdr_info* info, size_t, void* opaque)
+{
+    auto* text = static_cast<PluginText*>(opaque);
+    if (!info->dlpi_name || !info->dlpi_name[0]) return 0;
+    const char* bn = strrchr(info->dlpi_name, '/');
+    bn = bn ? bn + 1 : info->dlpi_name;
+    if (strcmp(bn, kPluginSoname) != 0) return 0;
+    for (ElfW(Half) i = 0; i < info->dlpi_phnum; ++i) {
+        const auto& p = info->dlpi_phdr[i];
+        if (p.p_type == PT_LOAD && (p.p_flags & PF_X) && (p.p_flags & PF_R) && p.p_memsz > text->size) {
+            text->begin = info->dlpi_addr + p.p_vaddr;
+            text->size = p.p_memsz;
+        }
+    }
+    return 0;
+}
+void tongue_only_entry(shadowhook_cpu_context_t* cpu, void*)
+{
+    const void* mouth = reinterpret_cast<const void*>(cpu->regs[3]);   // FaceTrackor(owner, eye, eye, mouth)
+    tongue_snapshot(mouth);
+    tongue_shadow(mouth);
+}
+// 1 hooked, 0 plugin not loaded yet, -1 not possible on this build.
+int install_tongue_only()
+{
+    static std::atomic<bool> done {false};
+    if (done.load()) return 1;
+    PluginText text;
+    dl_iterate_phdr(phoenix_text_cb, &text);
+    if (!text.begin) return 0;
+    int err = shadowhook_init(SHADOWHOOK_MODE_UNIQUE, false);
+    if (err != SHADOWHOOK_ERRNO_OK && err != SHADOWHOOK_ERRNO_DUP) {
+        log_fmt("tongue-only: shadowhook_init failed errno=%d", err);
+        return -1;
+    }
+    unsigned mismatches = 0, candidates = 0;
+    uintptr_t entry = tongue_compat::find_trackor(text.begin, text.size, mismatches, candidates);
+    if (!entry) {
+        log_fmt("tongue-only: FaceTrackor not recognised in this firmware (candidates=%u best_mismatches=%u of %u); "
+                "no tongue, service untouched", candidates, mismatches, tongue_compat::kTrackorWords);
+        return -1;
+    }
+    void* hook = shadowhook_intercept_instr_addr(reinterpret_cast<void*>(entry), tongue_only_entry, nullptr,
+                                                 SHADOWHOOK_INTERCEPT_WITH_FPSIMD_READ_WRITE);
+    if (!hook) {
+        log_fmt("tongue-only: intercept failed errno=%d", shadowhook_get_errno());
+        return -1;
+    }
+    done.store(true);
+    log_fmt("tongue-only: FaceTrackor found at plugin+0x%zx (mismatches=%u of %u); tongue active, "
+            "no eye/face enhancement", size_t(entry - text.begin), mismatches, tongue_compat::kTrackorWords);
+    return 1;
+}
+void* tongue_only_thread(void*)
+{
+    for (int i = 0; i < 300; i++) {
+        if (install_tongue_only() != 0) break;
+        usleep(200 * 1000);
+    }
+    report_runtime("ready");   // stock service either way; the tongue is an extra
+    return nullptr;
+}
+void start_tongue_only()
+{
+    report_runtime("pending");
+    pthread_t t;
+    if (pthread_create(&t, nullptr, tongue_only_thread, nullptr) == 0) pthread_detach(t);
+    else { append_log("tongue-only: thread creation failed"); report_runtime("ready"); }
 }
 
 // ---- guarded FaceTrackor initialization: first builder profile 6 -> 0 -------
@@ -786,6 +867,9 @@ void on_plugin_found(void* base)
             append_log("unsafe rollback: terminating service");
             _exit(5);
         }
+        // Enhancement hooks are not installed or were rolled back cleanly (plugin is not the
+        // verified build): the tongue can still run on its own.
+        install_tongue_only();
         report_runtime("failed");
         return;
     }
@@ -824,12 +908,16 @@ __attribute__((constructor)) void picoet_init()
         append_log("runtime state unavailable; refusing all hooks (prepare picoet-runtime directory)");
         return;
     }
-    if (install_gate_hook() != 0) {
+    int tongue_only = picoet_open_root_file(kTongueOnlyFile, O_RDONLY, 0);
+    if (tongue_only >= 0) { close(tongue_only); append_log("switch file: run as on an unverified firmware (no expression patches)"); }
+    const int gate = install_gate_hook(tongue_only >= 0);
+    if (gate < 0) {
         append_log("service guard/gate initialization failed; no plugin writes permitted");
         report_runtime("failed");
         return;
     }
     if (!g_enhanced_mode) { report_runtime("ready"); return; }
+    if (gate > 0) { start_tongue_only(); return; }   // unknown firmware or switch file
     report_runtime("pending");
     void* b = find_phoenix();
     if (b) on_plugin_found(b);

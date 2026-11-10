@@ -1,16 +1,24 @@
 #!/system/bin/sh
-# Magisk install hook: refuse on any unsupported firmware. This module ships only our own
-# artifacts (bin/picoet-inject + lib/libpicoet_hook.so) and never contains PICO bytes; the
-# device libraries are only referenced by name/offset at runtime.
+# Magisk install hook. This module ships only our own artifacts (bin/picoet-inject +
+# lib/libpicoet_hook.so) and never contains PICO bytes; the device libraries are only referenced
+# by name/offset at runtime.
+# It installs on any firmware. The eye/face enhancement patches PICO's tracking libraries at fixed
+# places, so the payload enables it only on the verified build below (it checks again at runtime).
+# On any other firmware the payload leaves the service stock and runs the tongue alone, finding
+# the mouth image by code pattern (hook/src/tongue_compat.h).
 SERVICE_SHA=7d39b99ee36ab13a5f39fefa2cfe6677ccc419b65d07e710831a569678f94a5c
 PLUGIN_SHA=0ce64527abb923b4eb8bb98f9df8b1c3e73ad95a460460f4140157c0a7363ba1
 SLIB=/system/lib64/libpxreyetrackingservice.so
 LIB=/system/lib64/libpxreyetracking.phoenix.so
 
-actual=$(sha256sum "$SLIB" | cut -d' ' -f1)
-[ "$actual" = "$SERVICE_SHA" ] || abort "! $SLIB sha256 $actual is not the supported build"
-actual=$(sha256sum "$LIB" | cut -d' ' -f1)
-[ "$actual" = "$PLUGIN_SHA" ] || abort "! $LIB sha256 $actual is not the supported build"
+[ -f "$SLIB" ] && [ -f "$LIB" ] || abort "! PICO eye/face tracking libraries not found: this is not a PICO 4 Pro / Enterprise"
+if [ "$(sha256sum "$SLIB" | cut -d' ' -f1)" = "$SERVICE_SHA" ] && [ "$(sha256sum "$LIB" | cut -d' ' -f1)" = "$PLUGIN_SHA" ]; then
+    ui_print "- Firmware: verified build (PICO OS 5.13.7), eye/face enhancement and tongue."
+else
+    ui_print "- Firmware: $(getprop ro.build.display.id) is not the verified build."
+    ui_print "  Eye/face enhancement stays off (stock tracking); the tongue runs on its own."
+    ui_print "  If the tongue does not appear, see /data/local/tmp/picoet-hook.log (tongue-only)."
+fi
 
 set_perm "$MODPATH/post-fs-data.sh" 0 0 0755
 set_perm "$MODPATH/service.sh" 0 0 0755
@@ -20,7 +28,7 @@ set_perm "$MODPATH/uninstall.sh" 0 0 0755
 set_perm "$MODPATH/bin/picoet-inject" 0 0 0755
 set_perm "$MODPATH/lib/libpicoet_hook.so" 0 0 0644
 set_perm "$MODPATH/hashes.sh" 0 0 0644
-set_perm "$MODPATH/tongue-app.sh" 0 0 0755
+set_perm "$MODPATH/apps.sh" 0 0 0755
 
 # An upgrade is staged until reboot. Keep the running instance's actual state;
 # service.sh clears stale reports and republishes the replacement after boot.
@@ -42,9 +50,9 @@ fi
 if [ ! -e /data/local/tmp/tongue-live.ip ]; then
     echo on > /data/local/tmp/tongue-live.ip && chmod 600 /data/local/tmp/tongue-live.ip && chown 0:0 /data/local/tmp/tongue-live.ip
 fi
-# Bundled Tongue Calibration app: install now; service.sh re-checks it after every boot.
-sh "$MODPATH/tongue-app.sh" "$MODPATH" && ui_print "- Tongue Calibration app installed (apps list: Tongue Calibration)." \
-    || ui_print "- Tongue Calibration app will be installed after the reboot."
+# Bundled apps (Tongue Calibration, PicoFacialBridge): install now; service.sh re-checks after boot.
+sh "$MODPATH/apps.sh" "$MODPATH" && ui_print "- Apps installed: Tongue Calibration, PicoFacialBridge." \
+    || ui_print "- Apps will be installed after the reboot."
 
 ui_print "- PicoET-Enhance (runtime ptrace injection; no PICO bytes, no system writes)"
 ui_print "- Fresh-install default: dual/on; upgrades keep off as off/off, otherwise use dual/on."

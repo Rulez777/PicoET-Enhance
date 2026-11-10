@@ -152,18 +152,41 @@ struct Calibration { float left, center, right; int min_area; };
 static Calibration calibration{tongue_seg_weights::angle_left, tongue_seg_weights::angle_center,
                                tongue_seg_weights::angle_right, 100};
 
+// Per-user suppression map (56x56, 1 = ignore): cells where this person's own mouth without a
+// tongue (closed / open, recorded by the calibration app) looked like a tongue to the model, e.g.
+// a brightly lit upper lip, a beard edge or headphones. Those cells never count as tongue.
+static unsigned char suppress[56 * 56] = {};
+
+// Nose glare: the IR-saturated nose (grey >= 0.94) is the reference point for direction. If a
+// head-mount gives no saturated glare, fall back to the brightest 3% of the frame (if bright).
+static int nose_reference(const unsigned char* frame, double& nx, double& ny) {
+    unsigned threshold = 240;   // 0.94 * 255
+    int count = 0;
+    for (int i = 0; i < 200 * 200; i++) count += frame[i] >= threshold;
+    if (count < 50) {
+        int hist[256] = {}; for (int i = 0; i < 200 * 200; i++) hist[frame[i]]++;
+        int want = 200 * 200 * 3 / 100, acc = 0; threshold = 255;
+        while (threshold > 0 && acc + hist[threshold] < want) acc += hist[threshold--];
+        if (threshold < 150) return 0;   // no bright nose glare at all: no reference
+    }
+    nx = ny = 0; count = 0;
+    for (int y = 0; y < 200; y++) for (int x = 0; x < 200; x++)
+        if (frame[y * 200 + x] >= threshold) { nx += x; ny += y; count++; }
+    return count;
+}
+
 // raw: a plausible tongue-shaped mask (>=20 cells, below the nose) with raw_angle, used by the
 // calibration app; present: raw and at least calibration.min_area cells.
 struct Geometry { bool present; int area; float angle, position; bool raw; float raw_angle, nose_x, nose_y; int nose; };
 static Geometry geometry(const unsigned char* frame, const float* logits, const Calibration& cal) {
     Geometry g{false, 0, 0, 0, false, 0, 0, 0, 0};
-    double nx = 0, ny = 0; int nose = 0;
-    for (int y = 0; y < 200; y++) for (int x = 0; x < 200; x++)
-        if (frame[y * 200 + x] / 255.f >= .94f) { nx += x; ny += y; nose++; }
+    double nx = 0, ny = 0;
+    int nose = nose_reference(frame, nx, ny);
     g.nose = nose;
     if (nose) { g.nose_x = float(nx / nose); g.nose_y = float(ny / nose); }
     double tx = 0, ty = 0, ws = 0;
     for (int y = 0; y < 56; y++) for (int x = 0; x < 56; x++) {
+        if (suppress[y * 56 + x]) continue;
         float p = 1.f / (1.f + std::exp(-logits[y * 56 + x]));
         if (p > .5f) { g.area++; tx += (x + .5) * (200. / 56) * p; ty += (y + .5) * (200. / 56) * p; ws += p; }
     }

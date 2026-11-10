@@ -42,7 +42,7 @@ public class MainActivity extends Activity {
 
     /** One TFR2 datagram. */
     static final class Frame {
-        int seq, flags, area, nose, calArea, personal, trainState, recLabel, recCount;
+        int seq, flags, area, nose, calArea, personal, trainState, recLabel, recCount, suppressed;
         float rawAngle, position, left, right, out, noseX, noseY, calLeft, calCenter, calRight, progress, oldScore, newScore;
         byte[] pixels = new byte[SIDE * SIDE], mask = new byte[GRID * GRID];
         boolean raw() { return (flags & 2) != 0; }
@@ -68,11 +68,24 @@ public class MainActivity extends Activity {
     int threshold;
     String message = "";
     // Mouth references (50x50 block means): closed for the open-mouth step, open for retraining poses.
-    // Recorded sessions: closed-vs-closed differs by 0.4-1.9 (shifted up to ~6), open-vs-closed ~8.6.
     final float[] closedRef = new float[50 * 50], openRef = new float[50 * 50];
     int closedRefFrames, openRefFrames;
     float[] previousBlocks;
-    static final float OPEN_CHANGE = 5f, TONGUE_CHANGE = 4f, STILL = 2.5f;
+    // This person's own frame-to-frame jitter with the mouth closed sets the change thresholds
+    // (author's sessions: jitter ~0.4-1.9, open-vs-closed ~8.6 grey levels).
+    float jitterSum; int jitterFrames;
+    float jitter() { return jitterFrames == 0 ? 1f : jitterSum / jitterFrames; }
+    float openChange() { return Math.max(3f, Math.min(8f, 4 * jitter() + 1.5f)); }
+    float tongueChange() { return Math.max(2.5f, Math.min(6f, 3 * jitter() + 1.5f)); }
+    float still() { return Math.max(1.5f, Math.min(4f, 3 * jitter() + 1f)); }
+    // Cells the model marks as tongue while this person's mouth is closed/open without a tongue
+    // (bright upper lip, beard edge, headphones): sent to the headset as a suppression map.
+    final int[][] negHits = new int[2][GRID * GRID];   // [closed, open]
+    final int[] negFrames = new int[2]; int suppressedCells;
+    // Each pose step: PREPARE (read the instruction, countdown, nothing recorded), CAPTURE, DONE.
+    static final int PREPARE = 0, CAPTURE = 1, DONE = 2;
+    static final long PREPARE_MS = 3000, DONE_MS = 1200;
+    int phase = CAPTURE; long phaseStarted; int nextStep;
     int sentLabel = -1; long sentAt;
     volatile boolean running;
     DatagramSocket socket;
@@ -143,23 +156,91 @@ public class MainActivity extends Activity {
         f.noseX = h.getFloat(); f.noseY = h.getFloat(); f.nose = h.getInt();
         f.calLeft = h.getFloat(); f.calCenter = h.getFloat(); f.calRight = h.getFloat(); f.calArea = h.getInt();
         f.personal = h.getInt(); f.trainState = h.getInt(); f.progress = h.getFloat(); f.oldScore = h.getFloat(); f.newScore = h.getFloat();
-        f.recLabel = h.getInt(); f.recCount = h.getInt();
+        f.recLabel = h.getInt(); f.recCount = h.getInt(); f.suppressed = h.getInt();
         System.arraycopy(buf, HEADER, f.pixels, 0, SIDE * SIDE);
         System.arraycopy(buf, HEADER + SIDE * SIDE, f.mask, 0, GRID * GRID);
         return f;
     }
 
-    /** Fit: the nose glare (the reference point for direction) must be visible and not flooding. */
+    /** Fit: the nose glare (the reference point for direction) must be visible and not flooding.
+     *  Wide band on purpose (4-50% of the frame): glare size differs between faces and head-mounts. */
     static String fitProblem(Frame f) {
-        if (f.nose < 3000) return t("The camera does not see your nose and upper lip. Pull the headset a bit lower and tighter.",
+        if (f.nose < 1500) return t("The camera does not see your nose and upper lip. Pull the headset a bit lower and tighter.",
                 "Камера не видит нос и верхнюю губу. Опустите шлем чуть ниже и затяните плотнее.");
-        if (f.nose > 11000) return t("Too much glare in the mouth camera. Seat the headset so it does not press on your nose.",
+        if (f.nose > 20000) return t("Too much glare in the mouth camera. Seat the headset so it does not press on your nose.",
                 "Слишком много засветки в камере рта. Наденьте шлем так, чтобы он не давил на нос.");
         return null;
     }
 
+    static boolean poseStep(int s) { return s >= CLOSED && s <= RIGHT; }
+
     void go(int next) {
         step = next; held = 0; window.clear(); stepStarted = System.currentTimeMillis(); sideBest = angleCenter; previousBlocks = null;
+        phase = poseStep(next) ? PREPARE : CAPTURE; phaseStarted = stepStarted;
+    }
+
+    /** A pose step finished: show "done" briefly, then continue (next < 0: finish the flow). */
+    void stepDone(int next) {
+        if (retrain) setRecording(0);
+        phase = DONE; phaseStarted = System.currentTimeMillis(); nextStep = next;
+    }
+
+    /** Builds the suppression map from the closed/open frames and sends it to the headset. */
+    void sendSuppression() {
+        // Hot cell: marked in >= 40% of the closed-mouth frames or >= 40% of the open-mouth frames
+        // (counted per pose: the lip sits elsewhere when the mouth opens).
+        boolean[] hot = new boolean[GRID * GRID]; int hotCells = 0;
+        for (int i = 0; i < GRID * GRID; i++) {
+            for (int p = 0; p < 2; p++) if (negFrames[p] > 0 && negHits[p][i] * 10 >= negFrames[p] * 4) hot[i] = true;
+            if (hot[i]) hotCells++;
+        }
+        // A whole lip or beard edge (60+ cells, like the reported upper lip of ~240) moves with
+        // expressions, so it gets a two-cell margin; a few stray cells get one.
+        byte[] map = grow(hot, hotCells >= 60 ? 2 : 1);
+        if (count(map) > GRID * GRID / 3) map = grow(hot, 1);
+        if (count(map) > GRID * GRID / 3) Arrays.fill(map, (byte) 0);   // implausible: send nothing
+        suppressedCells = count(map);
+        recountNegatives(map);
+        byte[] msg = new byte[4 + GRID * GRID];
+        msg[0] = 'T'; msg[1] = 'S'; msg[2] = 'U'; msg[3] = (byte) (retrain ? 'M' : 'P');   // TSUM merges, TSUP replaces
+        System.arraycopy(map, 0, msg, 4, map.length);
+        send(msg);
+    }
+
+    final ArrayList<boolean[]> negMasks = new ArrayList<>();
+    final ArrayList<Boolean> negRaw = new ArrayList<>();   // was that frame's mask tongue-shaped at all
+
+    static int count(byte[] map) { int n = 0; for (byte b : map) n += b; return n; }
+
+    static byte[] grow(boolean[] hot, int radius) {
+        byte[] map = new byte[GRID * GRID];
+        for (int y = 0; y < GRID; y++) for (int x = 0; x < GRID; x++) {
+            boolean on = false;
+            for (int dy = -radius; dy <= radius && !on; dy++) for (int dx = -radius; dx <= radius && !on; dx++) {
+                int yy = y + dy, xx = x + dx;
+                on = yy >= 0 && yy < GRID && xx >= 0 && xx < GRID && hot[yy * GRID + xx];
+            }
+            if (on) map[y * GRID + x] = 1;
+        }
+        return map;
+    }
+
+    /** pose: 0 closed mouth, 1 open mouth without tongue. */
+    void countNegative(Frame f, int pose) {
+        boolean[] m = new boolean[GRID * GRID];
+        for (int i = 0; i < GRID * GRID; i++) if ((f.mask[i] & 255) > 128) { negHits[pose][i]++; m[i] = true; }
+        negFrames[pose]++; negMasks.add(m); negRaw.add(f.raw());
+    }
+
+    /** No-tongue mask sizes as the headset will see them: suppressed cells no longer count, and a
+     *  mask the headset rejects by shape cannot trigger at any size. */
+    void recountNegatives(byte[] map) {
+        negAreas.clear();
+        for (int k = 0; k < negMasks.size(); k++) {
+            boolean[] m = negMasks.get(k);
+            int a = 0; for (int i = 0; i < GRID * GRID; i++) if (m[i] && map[i] == 0) a++;
+            negAreas.add(negRaw.get(k) ? a : 0);
+        }
     }
 
     static float[] blocks(Frame f) {
@@ -193,28 +274,45 @@ public class MainActivity extends Activity {
         long now = System.currentTimeMillis();
         if (step == CONNECT) { if (f != null) go(HOME); view.postInvalidate(); return; }
         if (f == null) { view.postInvalidate(); return; }
+        if (poseStep(step) && phase == PREPARE) {   // reading time: nothing is recorded
+            if (retrain) setRecording(0);
+            if (now - phaseStarted >= PREPARE_MS) { phase = CAPTURE; phaseStarted = now; stepStarted = now; }
+            view.postInvalidate(); return;
+        }
+        if (poseStep(step) && phase == DONE) {
+            if (now - phaseStarted >= DONE_MS) {
+                if (nextStep >= 0) go(nextStep);
+                else if (retrain) { sentLabel = -1; setRecording(0); command("TTRN"); go(TRAINING); }
+                else finishCalibration();
+            }
+            view.postInvalidate(); return;
+        }
         switch (step) {
             case FIT:
                 held = fitProblem(f) == null ? held + 1 : 0;
-                if (held >= 20) go(CLOSED);
+                if (held >= 20 && now - stepStarted >= 2000) go(CLOSED);
                 break;
             case CLOSED: {
-                if (fitProblem(f) != null || now - stepStarted < 1500) { held = 0; if (retrain) setRecording(0); break; }
+                if (fitProblem(f) != null) { held = 0; if (retrain) setRecording(0); break; }
                 float[] b = blocks(f);
+                if (previousBlocks != null) { jitterSum += difference(b, previousBlocks); jitterFrames++; }
+                previousBlocks = b;
                 closedRefFrames = accumulate(closedRef, closedRefFrames, b);
                 negAreas.add(f.raw() ? f.area : 0);
+                countNegative(f, 0);
                 if (retrain) setRecording(1);
-                if (++held >= (retrain ? REC_FRAMES : NEG_FRAMES)) { if (retrain) setRecording(0); go(HIDDEN_OPEN); }
+                if (++held >= (retrain ? REC_FRAMES : NEG_FRAMES)) stepDone(HIDDEN_OPEN);
                 break;
             }
             case HIDDEN_OPEN: {
                 float[] b = blocks(f);
-                boolean open = fitProblem(f) == null && closedRefFrames > 0 && difference(b, closedRef) >= OPEN_CHANGE;
+                boolean open = fitProblem(f) == null && closedRefFrames > 0 && difference(b, closedRef) >= openChange();
                 if (!open) { held = 0; if (retrain) setRecording(0); break; }   // mouth not open yet
                 openRefFrames = accumulate(openRef, openRefFrames, b);
                 negAreas.add(f.raw() ? f.area : 0);
+                countNegative(f, 1);
                 if (retrain) setRecording(2);
-                if (++held >= (retrain ? REC_FRAMES : NEG_FRAMES)) { if (retrain) setRecording(0); go(CENTER); }
+                if (++held >= (retrain ? REC_FRAMES : NEG_FRAMES)) { sendSuppression(); stepDone(CENTER); }
                 break;
             }
             case CENTER: case LEFT: case RIGHT:
@@ -250,7 +348,7 @@ public class MainActivity extends Activity {
     static String score(float s) { return String.format(Locale.US, "%.2f", s); }
 
     void calibrationPose(Frame f) {
-        if (!f.raw() || f.area < 40) { held = 0; window.clear(); return; }
+        if (!f.raw() || f.area < 20) { held = 0; window.clear(); return; }
         if (step != CENTER) {   // must have moved away from centre, to the other side from left
             float d = f.rawAngle - angleCenter;
             if (Math.abs(d) < .1f || (step == RIGHT && d * (angleLeft - angleCenter) > 0)) { held = 0; window.clear(); return; }
@@ -270,7 +368,7 @@ public class MainActivity extends Activity {
         if (++held >= (step == CENTER ? POSE_FRAMES : SIDE_FRAMES)) {
             float a = step == CENTER ? median(window) : sideBest;
             if (step == CENTER) angleCenter = a; else if (step == LEFT) angleLeft = a; else angleRight = a;
-            if (step == RIGHT) finishCalibration(); else go(step + 1);
+            stepDone(step == RIGHT ? -1 : step + 1);
         }
     }
 
@@ -278,16 +376,12 @@ public class MainActivity extends Activity {
      *  clearly differs from the open-mouth-without-tongue reference and is held still. */
     void retrainPose(Frame f) {
         float[] b = blocks(f);
-        boolean changed = openRefFrames > 0 && difference(b, openRef) >= TONGUE_CHANGE;
-        boolean still = previousBlocks == null || difference(b, previousBlocks) < STILL;
+        boolean changed = openRefFrames > 0 && difference(b, openRef) >= tongueChange();
+        boolean still = previousBlocks == null || difference(b, previousBlocks) < still();
         previousBlocks = b;
-        if (fitProblem(f) != null || !changed || !still || System.currentTimeMillis() - stepStarted < 1500) { held = 0; setRecording(0); return; }
+        if (fitProblem(f) != null || !changed || !still) { held = 0; setRecording(0); return; }
         setRecording(step == CENTER ? 3 : step == LEFT ? 4 : 5);
-        if (++held >= REC_FRAMES) {
-            setRecording(0);
-            if (step == RIGHT) { sentLabel = -1; setRecording(0); command("TTRN"); go(TRAINING); }
-            else go(step + 1);
-        }
+        if (++held >= REC_FRAMES) stepDone(step == RIGHT ? -1 : step + 1);
     }
 
     void finishCalibration() {
@@ -322,9 +416,12 @@ public class MainActivity extends Activity {
 
     synchronized void begin(boolean retraining) {
         retrain = retraining;
-        negAreas.clear(); poseAreas.clear(); message = "";
+        negAreas.clear(); poseAreas.clear(); negMasks.clear(); negRaw.clear(); message = "";
         closedRefFrames = 0; openRefFrames = 0; Arrays.fill(closedRef, 0); Arrays.fill(openRef, 0);
-        if (retraining) { command("TCLR"); sentLabel = -1; }
+        jitterSum = 0; jitterFrames = 0; Arrays.fill(negHits[0], 0); Arrays.fill(negHits[1], 0); negFrames[0] = negFrames[1] = 0; suppressedCells = 0;
+        // Calibration starts from a clean slate (default calibration, nothing suppressed) so the
+        // closed/open steps see this person's raw false masks. Retraining keeps the calibration's map.
+        if (retraining) { command("TCLR"); sentLabel = -1; } else command("TRST");
         go(FIT);
     }
 
@@ -343,19 +440,43 @@ public class MainActivity extends Activity {
         if (f == null) return "";
         String model = f.personal != 0 ? t("personal (retrained)", "личная (переобучена)") : t("standard", "стандартная");
         String cal = f.defaultCalibration() ? t("standard", "стандартная") : t("personal", "личная");
-        return t("Model: ", "Модель: ") + model + "    " + t("Calibration: ", "Калибровка: ") + cal;
+        String s = t("Model: ", "Модель: ") + model + "    " + t("Calibration: ", "Калибровка: ") + cal;
+        if (f.suppressed > 0) s += "    " + t("Ignored zone: ", "Игнор-зона: ") + f.suppressed;
+        return s;
+    }
+
+    /** What to do in a pose step, as one short instruction (shown in every phase). */
+    String instruction(int s) {
+        switch (s) {
+            case CLOSED: return t("Close your mouth and relax.", "Закройте рот и расслабьтесь.");
+            case HIDDEN_OPEN: return t("Open your mouth, keep the tongue inside.", "Откройте рот, язык держите внутри.");
+            case CENTER: return t("Stick your tongue straight out and hold it.", "Высуньте язык прямо и держите.");
+            case LEFT: return t("Tongue to YOUR left and slightly down, as far as is comfortable. Hold.", "Язык в ВАШУ левую сторону и чуть вниз, насколько удобно. Держите.");
+            default: return t("Tongue to YOUR right and slightly down, as far as is comfortable. Hold.", "Язык в ВАШУ правую сторону и чуть вниз, насколько удобно. Держите.");
+        }
     }
 
     String prompt() {
         Frame f = latest;
+        if (poseStep(step)) {
+            String head = t("Step ", "Шаг ") + (step - CLOSED + 1) + t(" of 5", " из 5") + "\n";
+            if (phase == DONE) return head + t("Done!", "Готово!") + (nextStep >= 0 ? "\n" + t("Next: ", "Дальше: ") + instruction(nextStep) : "");
+            if (phase == PREPARE) return head + instruction(step) + "\n" + t("Get ready, recording starts in a moment.", "Приготовьтесь, запись начнётся через пару секунд.");
+            String extra = "";
+            if (step == HIDDEN_OPEN && System.currentTimeMillis() - stepStarted > 6000 && held == 0) extra = "\n" + t("Open it a bit wider.", "Откройте чуть шире.");
+            else if (step >= CENTER) extra = hint("").trim().isEmpty() ? "" : "\n" + hint("").trim();
+            return head + instruction(step) + extra;
+        }
         switch (step) {
             case CONNECT: return System.currentTimeMillis() - stepStarted > 4000
                     ? t("No camera data. Make sure face tracking is on, the PicoET-Enhance tongue build is installed and the headset is worn.",
                         "Нет данных с камеры. Проверьте, что трекинг лица включён, установлена сборка PicoET-Enhance с языком и шлем надет.")
                     : t("Connecting to the mouth camera...", "Подключаюсь к камере рта...");
-            case HOME: return t("Calibrate first: about 20 seconds, fixes a tongue that points the wrong way.\n"
+            case HOME: return t("Calibrate first: about a minute. It fixes a tongue that points the wrong way\n"
+                        + "and a lip or beard that is taken for a tongue.\n"
                         + "Retrain only if calibration did not help.",
-                    "Сначала калибровка: около 20 секунд, исправляет язык, который смотрит не туда.\n"
+                    "Сначала калибровка: около минуты. Исправляет язык, который смотрит не туда,\n"
+                        + "и губу или бороду, которую принимают за язык.\n"
                         + "Переобучение — только если калибровка не помогла.");
             case WARN: return t("Retraining teaches the model on your face (about 15 s of poses, then 1-2 minutes on the headset). "
                         + "Use it only if calibration did not help. A poor recording can make tracking worse: the app keeps the new model only "
@@ -465,12 +586,18 @@ public class MainActivity extends Activity {
         void drawProgress(Canvas c, float x, float y) {
             int total = (step == CLOSED || step == HIDDEN_OPEN) ? (retrain ? REC_FRAMES : NEG_FRAMES)
                     : retrain ? REC_FRAMES : step == CENTER ? POSE_FRAMES : SIDE_FRAMES;
-            float frac = Math.min(1f, held / (float) total);
+            long since = System.currentTimeMillis() - phaseStarted;
+            float frac = phase == DONE ? 1f : phase == PREPARE ? Math.min(1f, since / (float) PREPARE_MS) : Math.min(1f, held / (float) total);
             fill.setStyle(Paint.Style.STROKE); fill.setStrokeWidth(14);
             fill.setColor(Color.rgb(50, 56, 70)); c.drawCircle(x + 70, y + 70, 60, fill);
-            fill.setColor(Color.rgb(80, 220, 140)); c.drawArc(new RectF(x + 10, y + 10, x + 130, y + 130), -90, 360 * frac, false, fill);
+            // Grey ring = countdown while reading, green = recording, full green = done.
+            fill.setColor(phase == PREPARE ? Color.rgb(140, 150, 170) : Color.rgb(80, 220, 140));
+            c.drawArc(new RectF(x + 10, y + 10, x + 130, y + 130), -90, 360 * frac, false, fill);
             fill.setStyle(Paint.Style.FILL);
-            c.drawText((step - CLOSED + 1) + " / 5", x + 160, y + 85, text);
+            String inner = phase == PREPARE ? String.valueOf(Math.max(1, 3 - (int) (since / 1000))) : phase == DONE ? "✓" : "";
+            if (!inner.isEmpty()) { float w = text.measureText(inner); c.drawText(inner, x + 70 - w / 2, y + 84, text); }
+            String label = phase == PREPARE ? t("get ready", "приготовьтесь") : phase == DONE ? t("done", "готово") : t("recording", "запись");
+            c.drawText(label, x + 160, y + 85, small);
         }
 
         void drawBar(Canvas c, float frac, float x, float y, float width) {

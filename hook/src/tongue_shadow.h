@@ -16,8 +16,11 @@
 #include <cstddef>
 #include "root_file.h"
 #include "tongue_seg.h"
+#include "tongue_cpu.h"
 #include "tongue_train.h"
 #include <mutex>
+// On-headset tongue model. Release builds write no diagnostics: the shadow log and frame files
+// below exist only when built with -DPICOET_TONGUE_DIAG=ON (hook/CMakeLists.txt).
 // On-headset tongue model. Two root-owned opt-in switches:
 //   /data/local/tmp/tongue-live.ip     LIVE: TNG2 packets over Wi-Fi UDP 19031 to the subscribing
 //                                      UnifiedPicoModule (and abstract socket pico_tongue_live for ADB)
@@ -63,6 +66,28 @@ static void save_calibration(float l, float c, float r, int area) {
     rename(tmp, kCalibration);
 }
 
+// Per-user suppression map (tongue_seg::suppress), 56*56 bytes of 0/1, written by the calibration
+// app through TSUP. Missing or wrong-sized -> nothing suppressed. Calibration reset clears it.
+static const char kSuppress[] = "/data/local/tmp/tongue-suppress.bin";
+static int suppressed_cells = 0;
+static void load_suppression() {
+    unsigned char map[56 * 56] = {};
+    int f = picoet_open_root_file(kSuppress, O_RDONLY, 0);
+    if (f >= 0) { if (read(f, map, sizeof(map)) != ssize_t(sizeof(map))) memset(map, 0, sizeof(map)); close(f); }
+    int n = 0;
+    for (int i = 0; i < 56 * 56; i++) { map[i] = map[i] ? 1 : 0; n += map[i]; }
+    if (n > 56 * 56 / 2) { memset(map, 0, sizeof(map)); n = 0; }   // implausible: ignore
+    memcpy(tongue_seg::suppress, map, sizeof(map)); suppressed_cells = n;
+}
+static void save_suppression(const unsigned char* map) {
+    char tmp[] = "/data/local/tmp/tongue-suppress.bin.new";
+    unlink(tmp);
+    int f = picoet_open_root_file(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (f < 0) return;
+    bool ok = write(f, map, 56 * 56) == 56 * 56; close(f);
+    if (ok) rename(tmp, kSuppress); else unlink(tmp);
+}
+
 // UDP 19031, one socket for every peer:
 //   LAN  "TSUB"           PC module subscribes; TNG2 tongue packets for 3s (when live)
 //   127.0.0.1 "TCAM"      calibration app subscribes; TFRM camera+mask+geometry for 3s
@@ -73,7 +98,7 @@ struct __attribute__((packed)) FrameHeader {
     nose_x, nose_y; int32_t nose; float cal_left, cal_center, cal_right; int32_t cal_area;
     // TFR2: retraining status for the app
     uint32_t personal_model, train_state; float train_progress, old_score, new_score;
-    uint32_t rec_label, rec_count, reserved;
+    uint32_t rec_label, rec_count, suppressed_cells;
 };
 static_assert(sizeof(FrameHeader) == 96, "TFR2 header ABI");
 
@@ -104,27 +129,42 @@ static void publish(unsigned seq, const tongue_seg::Geometry& g, bool active, fl
     timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t now = uint64_t(ts.tv_sec) * 1000000000ULL + ts.tv_nsec;
     for (int i = 0; i < 8; i++) {
-        char req[32]; sockaddr_in from{}; socklen_t len = sizeof(from);
+        static char req[4 + 56 * 56 + 16]; sockaddr_in from{}; socklen_t len = sizeof(from);
         ssize_t n = recvfrom(udp, req, sizeof(req), MSG_DONTWAIT, (sockaddr*)&from, &len);
         if (n < 0) break;
         if (n < 4 || from.sin_family != AF_INET) continue;
         uint32_t a = ntohl(from.sin_addr.s_addr);
         bool loopback = (a >> 24) == 127;
-        bool lan = (a >> 24) == 10 || (a >> 20) == 0xac1 || (a >> 16) == 0xc0a8;   // local networks only
+        // Private, carrier-grade/VPN (100.64/10, e.g. Tailscale) and link-local networks only.
+        bool lan = (a >> 24) == 10 || (a >> 20) == 0xac1 || (a >> 16) == 0xc0a8 ||
+                   (a >> 22) == (0x64400000u >> 22) || (a >> 16) == 0xa9fe;
         if (!memcmp(req, "TSUB", 4) && lan) { pc = from; pc_seen = now; }
         else if (!memcmp(req, "TCAM", 4) && loopback) { app = from; app_seen = now; }
         else if (!memcmp(req, "TCFG", 4) && loopback && n >= 20) {
             float l, c, r, area; memcpy(&l, req + 4, 4); memcpy(&c, req + 8, 4); memcpy(&r, req + 12, 4); memcpy(&area, req + 16, 4);
             if (valid_calibration(l, c, r, int(area))) { save_calibration(l, c, r, int(area)); load_calibration(); }
         }
-        else if (!memcmp(req, "TRST", 4) && loopback) { unlink(kCalibration); load_calibration(); }
+        // TRST: back to the default calibration and no suppression (the app sends it before a new run).
+        else if (!memcmp(req, "TRST", 4) && loopback) { unlink(kCalibration); unlink(kSuppress); load_calibration(); load_suppression(); }
+        // TSUP <56*56 bytes>: per-user suppression map measured on this person's no-tongue mouth.
+        else if (!memcmp(req, "TSUP", 4) && loopback && n == 4 + 56 * 56) {
+            save_suppression(reinterpret_cast<unsigned char*>(req + 4)); load_suppression();
+        }
+        // TSUM <56*56 bytes>: add cells to the existing map (retraining keeps the calibration's map).
+        else if (!memcmp(req, "TSUM", 4) && loopback && n == 4 + 56 * 56) {
+            unsigned char merged[56 * 56];
+            for (int i = 0; i < 56 * 56; i++) merged[i] = (tongue_seg::suppress[i] || req[4 + i]) ? 1 : 0;
+            save_suppression(merged); load_suppression();
+        }
         // Retraining (tongue_train.h): TREC <label> records the following frames under that label
         // (0 stops), TCLR drops the recording, TTRN starts training, TSTD restores the shipped model
         // and calibration.
         else if (!memcmp(req, "TREC", 4) && loopback && n >= 5 && uint8_t(req[4]) <= tongue_train::RIGHT) tongue_train::recording = uint8_t(req[4]);
         else if (!memcmp(req, "TCLR", 4) && loopback) tongue_train::clear_recording();
         else if (!memcmp(req, "TTRN", 4) && loopback) tongue_train::start();
-        else if (!memcmp(req, "TSTD", 4) && loopback) { tongue_train::restore_standard(); unlink(kCalibration); load_calibration(); }
+        else if (!memcmp(req, "TSTD", 4) && loopback) {
+            tongue_train::restore_standard(); unlink(kCalibration); unlink(kSuppress); load_calibration(); load_suppression();
+        }
     }
     if (is_live && pc_seen && now - pc_seen < 3000000000ULL)
         sendto(udp, &packet, sizeof(packet), MSG_DONTWAIT, (sockaddr*)&pc, sizeof(pc));
@@ -138,10 +178,11 @@ static void publish(unsigned seq, const tongue_seg::Geometry& g, bool active, fl
                       cal.left, cal.center, cal.right, cal.min_area,
                       tongue_train::personal.load() ? 1u : 0u, tongue_train::state.load(), tongue_train::progress.load(),
                       tongue_train::old_score.load(), tongue_train::new_score.load(),
-                      tongue_train::recording.load(), rec_count, 0};
+                      tongue_train::recording.load(), rec_count, uint32_t(suppressed_cells)};
         memcpy(buf, &h, sizeof(h)); memcpy(buf + sizeof(h), frame, 200 * 200);
-        unsigned char* m = buf + sizeof(h) + 200 * 200;
-        for (int i = 0; i < 56 * 56; i++) m[i] = (unsigned char)(255.f / (1.f + std::exp(-logits[i])));
+        unsigned char* m = buf + sizeof(h) + 200 * 200;   // what counts: suppressed cells shown as 0
+        for (int i = 0; i < 56 * 56; i++)
+            m[i] = tongue_seg::suppress[i] ? 0 : (unsigned char)(255.f / (1.f + std::exp(-logits[i])));
         sendto(udp, buf, sizeof(buf), MSG_DONTWAIT, (sockaddr*)&app, sizeof(app));
     }
 }
@@ -150,22 +191,27 @@ static void* worker(void*) {
     // Normal time-sharing priority (explicit, never inherited from the tracking thread).
     int tid = int(syscall(SYS_gettid));
     setpriority(PRIO_PROCESS, tid, 0);
-    // The tracking service is confined to cpuset /foreground (little cores 0-3). Move only this
-    // thread to the root cpuset and pin it to big cores 4-7 so it never competes with tracking.
-    int moved = -1, pinned = -1;
-    int cs = open("/dev/cpuset/tasks", O_WRONLY | O_CLOEXEC);
-    if (cs >= 0) { moved = dprintf(cs, "%d\n", tid) > 0 ? 0 : -1; close(cs); }
-    cpu_set_t set; CPU_ZERO(&set); for (int c = 4; c < 8; c++) CPU_SET(c, &set);
-    pinned = sched_setaffinity(tid, sizeof(set), &set);
+    // The tracking service is confined to the little cores; move only this thread to the fastest
+    // cores (found from cpufreq) so it never competes with eye/face tracking.
+    int pinned = tongue_cpu::pin_fast();
+#ifdef PICOET_TONGUE_DIAG
     {
         int f = picoet_open_root_file("/data/local/tmp/tongue-shadow.log", O_WRONLY | O_CREAT | O_APPEND, 0600);
-        if (f >= 0) { dprintf(f, "# worker tid=%d cpuset_moved=%d big_cores_pinned=%d\n", tid, moved, pinned); close(f); }
+        if (f >= 0) {
+            // The log is appended across service restarts: start over once it passes 8 MiB.
+            struct stat st;
+            if (fstat(f, &st) == 0 && st.st_size > (8 << 20) && ftruncate(f, 0) != 0) { /* keep appending */ }
+            dprintf(f, "# worker tid=%d fast_cores_pinned=%d\n", tid, pinned); close(f);
+        }
     }
+#else
+    (void)pinned;
+#endif
     unsigned seen = 0, written_frames = 0, lines = 0;
     unsigned char frame[200 * 200]; static float logits[56 * 56];
     int on = 0, off = 0; bool active = false; float pos = 0, out = 0;
     unsigned idle = 0; uint64_t calibration_checked = 0;
-    load_calibration();
+    load_calibration(); load_suppression();
     { tongue_seg::Head h; if (tongue_train::load_head(h)) { tongue_seg::active_head = h; tongue_train::personal = true; } }
     for (;;) {
         unsigned s = slot_seq.load(std::memory_order_acquire);
@@ -176,7 +222,7 @@ static void* worker(void*) {
         memcpy(frame, slot, sizeof(frame));
         if (slot_seq.load(std::memory_order_acquire) != s) continue;   // torn copy, retry
         seen = s;
-        if (ns - calibration_checked > 2000000000ULL) { calibration_checked = ns; load_calibration(); }
+        if (ns - calibration_checked > 2000000000ULL) { calibration_checked = ns; load_calibration(); load_suppression(); }
         {   // install a newly trained head + its calibration, or go back to the shipped model
             std::lock_guard<std::mutex> lg(tongue_train::lock);
             if (tongue_train::pending_head) {
@@ -215,7 +261,8 @@ static void* worker(void*) {
         float left = (pos < 0 ? -pos : 0) * out, right = (pos > 0 ? pos : 0) * out;
         double ms = (b.tv_sec - a.tv_sec) * 1e3 + (b.tv_nsec - a.tv_nsec) / 1e6;
         publish(s / 2, g, active, left, right, out, frame, logits);
-        if (lines < 200000) {
+#ifdef PICOET_TONGUE_DIAG
+        if (lines < 20000) {   // per service run (~17 min at 20 Hz)
             int f = picoet_open_root_file("/data/local/tmp/tongue-shadow.log", O_WRONLY | O_CREAT | O_APPEND, 0600);
             if (f >= 0) { dprintf(f, "%u %llu present=%d area=%d angle=%.3f position=%.3f active=%d left=%.3f right=%.3f out=%.3f ms=%.1f\n",
                                   s / 2, ns / 1000000ULL, g.present, g.area, g.angle, g.position, active, left, right, out, ms);
@@ -225,6 +272,9 @@ static void* worker(void*) {
             int f = picoet_open_root_file("/data/local/tmp/tongue-shadow.frames", O_WRONLY | O_CREAT | O_APPEND, 0600);
             if (f >= 0) { if (write(f, frame, sizeof(frame)) == ssize_t(sizeof(frame))) written_frames++; close(f); }
         }
+#else
+        (void)ms; (void)lines; (void)written_frames;
+#endif
     }
     return nullptr;
 }
@@ -240,7 +290,11 @@ static void tongue_shadow(const void* mat) {
     struct Unlock { std::atomic_flag& f; ~Unlock() { f.clear(); } } unlock{busy};
     if (now - last_arm_check >= 500000000ULL) {
         last_arm_check = now;
+#ifdef PICOET_TONGUE_DIAG
         int arm = picoet_open_root_file("/data/local/tmp/tongue-shadow.arm", O_RDONLY, 0);
+#else
+        int arm = -1;   // release builds keep no frames and write no per-frame log
+#endif
         int ip = picoet_open_root_file("/data/local/tmp/tongue-live.ip", O_RDONLY, 0);
         keep_frames = arm >= 0; live = ip >= 0;
         armed = arm >= 0 || ip >= 0; if (arm >= 0) close(arm); if (ip >= 0) close(ip);
@@ -250,9 +304,15 @@ static void tongue_shadow(const void* mat) {
     if (process_vm_readv(getpid(), &dh, 1, &sh, 1, 0) != sizeof(h)) return;
     int flags, rows, cols; unsigned char* data; size_t stride;
     memcpy(&flags, h, 4); memcpy(&rows, h + 8, 4); memcpy(&cols, h + 12, 4); memcpy(&data, h + 16, 8); memcpy(&stride, h + 80, 8);
-    if ((unsigned(flags) & 0xffff0fffU) != 0x42ff0000U || rows != 400 || cols != 400 || stride != 400 || !data) return;
-    static unsigned char pixels[160000]; iovec dp{pixels, sizeof(pixels)}, sp{data, sizeof(pixels)};
-    if (process_vm_readv(getpid(), &dp, 1, &sp, 1, 0) != sizeof(pixels)) return;
+    // Any single-channel 8-bit mouth image (PICO 4 Pro / Enterprise deliver 400x400) up to 1 MiB;
+    // it is box-averaged to the model's 200x200 (for 400x400 exactly the trained 2x2 average).
+    unsigned channels = ((unsigned(flags) >> 3) & 511) + 1;
+    if ((unsigned(flags) & 0xffff0000U) != 0x42ff0000U || (flags & 7) != 0 || channels != 1 || !data ||
+        rows < 200 || cols < 200 || stride < size_t(cols) || size_t(rows) * stride > (1u << 20)) return;
+    static unsigned char pixels[1 << 20];
+    size_t bytes = size_t(rows) * stride;
+    iovec dp{pixels, bytes}, sp{data, bytes};
+    if (process_vm_readv(getpid(), &dp, 1, &sp, 1, 0) != ssize_t(bytes)) return;
     last = now;
     if (!worker_started.exchange(true)) {
         pthread_t t; pthread_attr_t attr; pthread_attr_init(&attr);
@@ -266,9 +326,13 @@ static void tongue_shadow(const void* mat) {
     // seqlock: odd while writing
     unsigned s = slot_seq.load(std::memory_order_relaxed) + 1;
     slot_seq.store(s, std::memory_order_release);
-    for (unsigned y = 0; y < 200; y++) for (unsigned x = 0; x < 200; x++) {
-        const unsigned char* p = pixels + (2 * y) * 400 + 2 * x;
-        slot[y * 200 + x] = (unsigned char)((p[0] + p[1] + p[400] + p[401] + 2) >> 2);
+    for (unsigned y = 0; y < 200; y++) {
+        unsigned y0 = y * rows / 200, y1 = (y + 1) * rows / 200;
+        for (unsigned x = 0; x < 200; x++) {
+            unsigned x0 = x * cols / 200, x1 = (x + 1) * cols / 200, sum = 0, n = (y1 - y0) * (x1 - x0);
+            for (unsigned yy = y0; yy < y1; yy++) for (unsigned xx = x0; xx < x1; xx++) sum += pixels[yy * stride + xx];
+            slot[y * 200 + x] = (unsigned char)((sum + n / 2) / n);
+        }
     }
     slot_ns.store(now, std::memory_order_relaxed);
     slot_seq.store(s + 1, std::memory_order_release);

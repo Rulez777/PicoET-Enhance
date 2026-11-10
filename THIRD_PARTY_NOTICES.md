@@ -178,6 +178,14 @@ portions embedded by compilation. See the [LLVM license](https://llvm.org/LICENS
 and the fixed NDK's `NOTICE.toolchain` for its license and exception text. No NDK
 tool executables are distributed in the module.
 
+## PicoFacialBridge v0.6.0
+
+The Magisk zip built by `build-picoet-enhance.ps1` bundles the unmodified official release APK
+`PicoFacialBridge-v0.6.0-arm64-v8a-debug.apk` (https://github.com/WolalaQAQ/PicoFacialBridge,
+MIT License, Copyright (c) 2026 WolalaQAQ and PicoFacialBridge contributors), pinned by SHA-256.
+The APK itself is not stored in this repository; its license text is in
+`third_party/PicoFacialBridge/LICENSE` and is copied into the zip.
+
 ## PICO system software
 
 This project does not contain or redistribute any PICO binary. It references the

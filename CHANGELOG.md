@@ -2,6 +2,27 @@
 
 English | [简体中文](CHANGELOG_zh.md)
 
+## [2.4.2-tongue.4] - 2026-11-10 (fork Rulez777/PicoET-Enhance)
+
+### Added
+- All-in-one install in three steps. Headset: the Magisk zip now also bundles the official PicoFacialBridge v0.6.0 APK (MIT, pinned by SHA-256) next to the Tongue Calibration app; `apps.sh` installs or upgrades both at install time and after every boot, never downgrades, and grants the Bridge its face/eye tracking permissions. PC: `UnifiedPicoModule-0.4.1-tongue.4.zip` with `Install.cmd` (double-click; keeps the existing settings).
+- Any firmware: the installer no longer refuses unknown firmware builds. On a build other than the verified PICO OS 5.13.7 the expression patches (fixed addresses) stay off and the tracking plugin is left stock, while the tongue runs from a code-pattern search for the function that receives the mouth image (`hook/src/tongue_compat.h`, observed only) and the per-eye gate is hooked by symbol name. Exercised on 5.13.7 only (root-owned switch `/data/local/tmp/picoet-tongue-only`); other builds are untested.
+- Ignored zone for the upper lip and beards: the calibration app records which mask cells light up on the wearer's own closed and open mouth without a tongue (counted per pose, with a two-cell margin for a whole lip or beard edge, one cell otherwise) and sends them to the headset as a per-user suppression map (`/data/local/tmp/tongue-suppress.bin`, commands `TSUP`/`TSUM`). Those cells never count as tongue and never enter retraining masks. Checked against the one reported case (an upper lip read as a 244-cell tongue pointing straight out, reproduced with the stock model on a frame rebuilt from the screenshot); not yet tested on a real beard.
+- Calibration pacing: every pose step is now "get ready" (3 s countdown, nothing recorded), "recording", "Done! Next: ...", so there is time to read the instruction.
+- VRCFaceTracking 6 (including the Steam build): the PC module is rebased onto UnifiedPicoModule v0.4.1.
+
+### Changed
+- Nothing is tied to one headset any more: fast CPU cores are found from cpufreq instead of the fixed 4-7 / 5-7, the mouth image is box-averaged from any 8-bit single-channel size (400x400 gives exactly the old 2x2 average), the nose reference falls back to the brightest 3% when the head-mount gives no saturated glare, and the app's fit, change and stillness thresholds are relative to the wearer's own recordings.
+- Tongue subscribers are also accepted from 100.64.0.0/10 (e.g. Tailscale) and link-local addresses.
+- `calibration-app/build.sh` finds the Android SDK/JDK from `ANDROID_SDK_ROOT` / `JAVA_HOME` or any Unity install instead of one fixed Unity version.
+- Tongue Calibration app 3.0; `tongue-app.sh` replaced by `apps.sh`.
+- Diagnostics are off in release builds: no per-frame `tongue-shadow.log`, no frame capture (both now need `-DPICOET_TONGUE_DIAG=ON`); on the PC `tongue-status.json` and the once-a-second log line need a `tongue-diagnostics.enabled` file. Previous builds appended to `tongue-shadow.log` across restarts without a limit; it can be deleted.
+
+### Notes & Caveats
+- Default output with no calibration and no ignored zone is unchanged from tongue.2/tongue.3.
+- If the installed PicoFacialBridge was signed with a different key than the official release, it is removed and reinstalled, which resets its settings.
+- `versionCode` is 24.
+
 ## [2.4.2-tongue.2] - 2026-10-27 (fork Rulez777/PicoET-Enhance)
 
 ### Added

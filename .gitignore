@@ -10,3 +10,6 @@ artifacts/
 *.tmp
 Thumbs.db
 .DS_Store
+
+# Calibration app signing output
+calibration-app/*.idsig

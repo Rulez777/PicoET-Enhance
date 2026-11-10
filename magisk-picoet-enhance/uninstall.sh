@@ -22,5 +22,6 @@ resetprop --delete picoet.enhance.mode 2>/dev/null
 resetprop --delete picoet.enhance.gate 2>/dev/null
 rm -f /data/local/tmp/tongue-live.ip /data/local/tmp/tongue-live.status /data/local/tmp/tongue-shadow.arm \
     /data/local/tmp/tongue-shadow.log /data/local/tmp/tongue-shadow.frames \
-    /data/local/tmp/tongue-calibration /data/local/tmp/tongue-head.bin
+    /data/local/tmp/tongue-calibration /data/local/tmp/tongue-head.bin /data/local/tmp/tongue-suppress.bin \
+    /data/local/tmp/picoet-tongue-only
 pm uninstall dev.picoet.tonguecal >/dev/null 2>&1
