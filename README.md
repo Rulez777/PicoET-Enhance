@@ -21,6 +21,19 @@ Download two files from the [latest release](https://github.com/Rulez777/PicoET-
 
 That is all: no ADB, no IP addresses to type, no firewall rules, nothing else to download.
 To remove it again: PC, `Uninstall.cmd` from the same zip (puts the previous DLL back); headset, Magisk app → Modules → PicoET-Enhance → Remove → Reboot.
+
+Fresh installs enable enhanced mode (`dual/on`) at 90/90 Hz and the tongue after reboot. The zip also installs the **Tongue Calibration** app and **PicoFacialBridge v0.6.0** and grants the Bridge its tracking permissions; an installed Bridge is upgraded if it is older and never downgraded. If you switched to normal mode before upgrading, it stays off.
+
+Without the Magisk app, step 1 from a command line:
+
+```sh
+adb push magisk-picoet-enhance-v2.4.2-tongue.4.zip /data/local/tmp/
+adb shell su -c 'magisk --install-module /data/local/tmp/magisk-picoet-enhance-v2.4.2-tongue.4.zip'
+adb reboot
+```
+
+Upstream builds without the tongue: [WolalaQAQ/PicoET-Enhance](https://github.com/WolalaQAQ/PicoET-Enhance/releases).
+
 Avatars need `TongueLeft` / `TongueRight` (Unified Expressions).
 
 ### Which version does what
@@ -105,22 +118,6 @@ The module works with the official VRCFaceTracking as is. If you want OSC close 
 | Companion components | On the headset: nothing else, PicoFacialBridge v0.6.0 is bundled in the zip. On the PC: VRCFaceTracking 5 or 6 (including the Steam VRCFT 6 build) and `UnifiedPicoModule-0.4.1-tongue.4.zip` from this fork's release |
 
 The installer accepts any firmware. It compares the SHA-256 of the device's eye-tracking libraries with the verified build and tells you which features will run; the payload checks again at runtime and never applies an address-based patch to a library it does not recognise.
-
-## Installation
-
-1. Download `magisk-picoet-enhance-v2.4.2-tongue.4.zip` from this fork's [Releases](https://github.com/Rulez777/PicoET-Enhance/releases) (upstream builds without the tongue: [WolalaQAQ/PicoET-Enhance](https://github.com/WolalaQAQ/PicoET-Enhance/releases)).
-2. Flash it in the Magisk app under Install from storage, or from a command line:
-
-   ```sh
-    adb push magisk-picoet-enhance-v2.4.2-tongue.4.zip /data/local/tmp/
-    adb shell su -c 'magisk --install-module /data/local/tmp/magisk-picoet-enhance-v2.4.2-tongue.4.zip'
-   ```
-
-3. Reboot the headset.
-4. On the PC, unpack `UnifiedPicoModule-0.4.1-tongue.4.zip`, close VRCFaceTracking and double-click `Install.cmd` (it copies the module into `%APPDATA%\VRCFaceTracking\CustomLibs` and keeps your settings). The module finds the headset the same way as the Bridge. Avatars need TongueLeft/TongueRight.
-5. Put the headset on, open **PicoFacialBridge** and start it, then run **Tongue Calibration** once (about a minute, it tells you what to do at each step).
-
-Fresh installs enable enhanced mode (`dual/on`) at 90/90 Hz and the tongue after reboot. The zip also installs the **Tongue Calibration** app and **PicoFacialBridge v0.6.0** and grants the Bridge its tracking permissions; an installed Bridge is upgraded if it is older and never downgraded. If you switched to normal mode before upgrading, it stays off.
 
 ## Usage
 

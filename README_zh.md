@@ -21,6 +21,18 @@
 
 就这些：不需要 ADB，不需要填写 IP，不需要防火墙规则，也不需要再下载别的东西。
 卸载：PC 端运行同一 zip 中的 `Uninstall.cmd`（恢复之前的 DLL）；头显端在 Magisk App → 模块 → PicoET-Enhance → 移除 → 重启。
+
+首次安装默认启用增强模式 `dual/on` 和舌头，重启后以 90/90 Hz 运行。zip 还会安装 **Tongue Calibration** 校准应用和 **PicoFacialBridge v0.6.0**，并授予 Bridge 追踪权限；已安装的 Bridge 版本较旧时会升级，不会降级。如果升级前已切到普通模式，升级后仍保持关闭。
+
+不使用 Magisk App 时，第 1 步可用命令行完成：
+
+```sh
+adb push magisk-picoet-enhance-v2.4.2-tongue.4.zip /data/local/tmp/
+adb shell su -c 'magisk --install-module /data/local/tmp/magisk-picoet-enhance-v2.4.2-tongue.4.zip'
+adb reboot
+```
+
+不含舌头的上游版本：[WolalaQAQ/PicoET-Enhance](https://github.com/WolalaQAQ/PicoET-Enhance/releases)。
 模型需要 `TongueLeft` / `TongueRight` 参数（Unified Expressions）。
 
 ### 各功能需要的版本
@@ -105,22 +117,6 @@ Windows 11 可能会忽略官方宿主申请的 1 ms 定时器精度，这时每
 | 配套组件 | 头显端：无需其他组件，zip 已内置 PicoFacialBridge v0.6.0。PC 端：VRCFaceTracking 5 或 6（包括 Steam 版 VRCFT 6），以及本分支 Release 中的 `UnifiedPicoModule-0.4.1-tongue.4.zip` |
 
 安装脚本接受任何固件。它把设备眼动库的 SHA-256 与已验证版本比较，并提示将启用哪些功能；模块在运行时会再次检查，绝不会对不认识的库应用依赖地址的补丁。
-
-## 安装
-
-1. 从本分支 [Releases](https://github.com/Rulez777/PicoET-Enhance/releases) 下载 `magisk-picoet-enhance-v2.4.2-tongue.4.zip`（不含舌头的上游版本：[WolalaQAQ/PicoET-Enhance](https://github.com/WolalaQAQ/PicoET-Enhance/releases)）。
-2. 在 Magisk App 中通过“从本地安装”刷入，或使用命令行：
-
-   ```sh
-    adb push magisk-picoet-enhance-v2.4.2-tongue.4.zip /data/local/tmp/
-    adb shell su -c 'magisk --install-module /data/local/tmp/magisk-picoet-enhance-v2.4.2-tongue.4.zip'
-   ```
-
-3. 重启头显。
-4. PC 端：解压 `UnifiedPicoModule-0.4.1-tongue.4.zip`，关闭 VRCFaceTracking，双击 `Install.cmd`（它把模块复制到 `%APPDATA%\VRCFaceTracking\CustomLibs` 并保留你的设置）。模块与 Bridge 用同样的方式找到头显。模型需要 TongueLeft/TongueRight 参数。
-5. 戴上头显，打开并启动 **PicoFacialBridge**，然后运行一次 **Tongue Calibration**（约一分钟，每一步都有提示）。
-
-首次安装默认启用增强模式 `dual/on` 和舌头，重启后以 90/90 Hz 运行。zip 还会安装 **Tongue Calibration** 校准应用和 **PicoFacialBridge v0.6.0**，并授予 Bridge 追踪权限；已安装的 Bridge 版本较旧时会升级，不会降级。如果升级前已切到普通模式，升级后仍保持关闭。
 
 ## 使用
 
