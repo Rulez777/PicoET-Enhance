@@ -20,6 +20,10 @@
 - Tongue Calibration 应用 3.0；`tongue-app.sh` 由 `apps.sh` 取代。
 - 发布构建关闭诊断：不再写逐帧 `tongue-shadow.log`，不保存帧（两者需要 `-DPICOET_TONGUE_DIAG=ON`）；PC 端的 `tongue-status.json` 和每秒日志需要 `tongue-diagnostics.enabled` 文件。旧版本会无上限地追加 `tongue-shadow.log`，可以删除。
 
+### 修复
+- PicoFacialBridge 的追踪权限在每次开机时授予，而不只是在安装后：安装后立即重启可能丢失授权。
+- 卸载模块时会同时卸载 Tongue Calibration 应用（原卸载脚本在包管理器就绪前运行）。
+
 ### 说明与注意事项
 - 没有校准、没有忽略区时，默认输出与 tongue.2/tongue.3 相同。
 - 如果已安装的 PicoFacialBridge 与官方发布版签名不同，会先卸载再安装，其设置会被重置。

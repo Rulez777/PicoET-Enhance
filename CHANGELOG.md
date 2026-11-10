@@ -20,6 +20,10 @@ English | [简体中文](CHANGELOG_zh.md)
 - Tongue Calibration app 3.0; `tongue-app.sh` replaced by `apps.sh`.
 - Diagnostics are off in release builds: no per-frame `tongue-shadow.log`, no frame capture (both now need `-DPICOET_TONGUE_DIAG=ON`); on the PC `tongue-status.json` and the once-a-second log line need a `tongue-diagnostics.enabled` file. Previous builds appended to `tongue-shadow.log` across restarts without a limit; it can be deleted.
 
+### Fixed
+- PicoFacialBridge's tracking permissions are granted on every boot, not only right after the install: a reboot straight after installing could lose them.
+- Removing the module now also removes the Tongue Calibration app (the uninstall script ran before the package manager was up).
+
 ### Notes & Caveats
 - Default output with no calibration and no ignored zone is unchanged from tongue.2/tongue.3.
 - If the installed PicoFacialBridge was signed with a different key than the official release, it is removed and reinstalled, which resets its settings.
