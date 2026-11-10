@@ -22,6 +22,17 @@ Download two files from the [latest release](https://github.com/Rulez777/PicoET-
 That is all: no ADB, no IP addresses to type, no firewall rules, nothing else to download.
 Avatars need `TongueLeft` / `TongueRight` (Unified Expressions).
 
+### Which version does what
+
+| You want | Headset module | PicoFacialBridge | PC module | VRCFaceTracking | Firmware |
+|---|---|---|---|---|---|
+| Tongue left/right | v2.4.2-tongue.4 (this zip) | v0.6.0 (inside the zip; v0.5.0+ works) | `UnifiedPicoModule-0.4.1-tongue.4.zip` | 5.4.5 or 6.0.0.0 (Steam) | any |
+| Real pupil size | v2.4.2-tongue.4 | v0.5.0+ | UnifiedPicoModule 0.4.0+ (0.4.1+ on VRCFT 6) | 5.4.5 or 6.0.0.0 | any (hooked by symbol name; verified on 5.13.7) |
+| Independent eyes, 90 Hz eye and mouth expressions | v2.4.2-tongue.4 | v0.5.0+ | UnifiedPicoModule 0.4.0+ | 5.4.5 or 6.0.0.0; OSC near 90 Hz needs [VRCFT-Enhance](https://github.com/WolalaQAQ/VRCFT-Enhance) | PICO OS 5.13.7 only |
+| Plain face and eye tracking, no module | not needed | v0.3+ | any UnifiedPicoModule | 5.4.5 or 6.0.0.0 | any |
+
+Use the two files of one release together. The tongue.3 PC DLL still receives the tongue from this headset module, but only on VRCFaceTracking 5 and without the cheek-puff guard.
+
 ## This fork: tongue left/right
 
 - How it works, calibration, evidence and retraining: [TONGUE.md](TONGUE.md),

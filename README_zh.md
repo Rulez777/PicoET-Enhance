@@ -22,6 +22,17 @@
 就这些：不需要 ADB，不需要填写 IP，不需要防火墙规则，也不需要再下载别的东西。
 模型需要 `TongueLeft` / `TongueRight` 参数（Unified Expressions）。
 
+### 各功能需要的版本
+
+| 功能 | 头显模块 | PicoFacialBridge | PC 模块 | VRCFaceTracking | 固件 |
+|---|---|---|---|---|---|
+| 舌头左右 | v2.4.2-tongue.4（本 zip） | v0.6.0（zip 内置；v0.5.0+ 可用） | `UnifiedPicoModule-0.4.1-tongue.4.zip` | 5.4.5 或 6.0.0.0（Steam） | 任意 |
+| 真实瞳孔直径 | v2.4.2-tongue.4 | v0.5.0+ | UnifiedPicoModule 0.4.0+（VRCFT 6 需 0.4.1+） | 5.4.5 或 6.0.0.0 | 任意（按符号名挂钩；在 5.13.7 上验证） |
+| 左右眼独立、眼部与嘴部 90 Hz 表情 | v2.4.2-tongue.4 | v0.5.0+ | UnifiedPicoModule 0.4.0+ | 5.4.5 或 6.0.0.0；OSC 接近 90 Hz 需要 [VRCFT-Enhance](https://github.com/WolalaQAQ/VRCFT-Enhance) | 仅 PICO OS 5.13.7 |
+| 普通面部与眼动追踪，不装模块 | 不需要 | v0.3+ | 任意 UnifiedPicoModule | 5.4.5 或 6.0.0.0 | 任意 |
+
+请配套使用同一 Release 的两个文件。tongue.3 的 PC DLL 仍能接收本头显模块的舌头数据，但仅限 VRCFaceTracking 5，且没有鼓腮保护。
+
 ## 本分支：舌头左右
 
 说明：[TONGUE.md](TONGUE.md)（英文）。PC 端源码：[Rulez777/UnifiedPicoModule `tongue/v0.4.1`](https://github.com/Rulez777/UnifiedPicoModule/tree/tongue/v0.4.1)（UnifiedPicoModule v0.4.1 + 舌头接收，支持 VRCFaceTracking 5 与 Steam 版 VRCFT 6）。

@@ -396,7 +396,10 @@ public class MainActivity extends Activity {
         int[] pos = sorted(poseAreas);
         int negHigh = neg.length == 0 ? 0 : neg[Math.min(neg.length - 1, (int) (neg.length * .95))];
         int posLow = pos.length == 0 ? 100 : pos[(int) (pos.length * .05)];
-        if (negHigh + 10 < posLow) threshold = Math.max(40, Math.min(300, Math.round(negHigh + (posLow - negHigh) * .4f)));
+        // 40% of the way from the no-tongue masks to the tongue, but never below 70% of the smallest
+        // real tongue: with the ignored zone the no-tongue masks are often 0, and a low threshold
+        // would let poses nobody recorded (puffed cheeks, half-pucker: 20-80 cells) through.
+        if (negHigh + 10 < posLow) threshold = Math.max(40, Math.min(300, Math.round(Math.max(negHigh + (posLow - negHigh) * .4f, posLow * .7f))));
         else threshold = 100;   // overlap: keep the shipped default
         message = t("Calibration saved.", "Калибровка сохранена.");
         sendCalibration();

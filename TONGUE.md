@@ -112,6 +112,7 @@ mouth camera (8-bit grey, 400x400 on PICO 4 Pro / Enterprise, inside pxreyetrack
 UnifiedPicoModule (VRCFaceTracking)
   -> TongueOut = max(PICO native TongueOut, model fallback)
   -> model fallback is blocked while PICO reports lip pucker (>0.3, full at 0.5, held 400 ms)
+  -> no tongue at all while PICO reports a cheek puff (>0.3, full at 0.5, held 400 ms)
   -> TongueLeft / TongueRight scaled by TongueOut
 ```
 
@@ -124,6 +125,14 @@ Tongue masks are built automatically (frame change against the open-mouth refere
 the model's own mask, largest blob). Every 4th frame of each pose is held out; the new head must
 see more tongue frames, produce no more false tongues and keep left and right apart. The personal
 head is stored in `/data/local/tmp/tongue-head.bin` with a checksum.
+
+## Known limits
+
+The model was trained on one face and on a limited set of mouth poses. Poses it never saw can
+still produce a false tongue. Covered so far: smile with teeth, pucker and its release, wide-open
+mouth, lower lip pushed out, closed mouth, puffed cheeks (PC-side guard). If another expression
+shows a tongue on your face, please report which one: guards like the pucker and cheek-puff ones
+are cheap to add on the PC side, and calibration's ignored zone handles what is constant on a face.
 
 ## Verification done
 
