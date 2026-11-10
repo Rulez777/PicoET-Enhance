@@ -22,7 +22,8 @@ You need a rooted (Magisk) PICO 4 Pro or PICO 4 Enterprise and a PC with VRCFace
 2. **PC:** unpack `UnifiedPicoModule-0.4.1-tongue.4.zip`, close VRCFaceTracking, double-click
    `Install.cmd`, start VRCFaceTracking. The script copies the module into
    `%APPDATA%\VRCFaceTracking\CustomLibs\8322e16d-...`, keeps your `UnifiedPicoModule.json` and
-   saves the previous DLL as `UnifiedPicoModule.dll.previous`. The module finds the headset the
+   saves the previous DLL as `UnifiedPicoModule.dll.previous`. `Uninstall.cmd` in the same zip
+   puts it back. The module finds the headset the
    same way as PicoFacialBridge (auto-discovery, or `Bridge.IP` if you set one). If your face comes
    through PICO Connect streaming instead, set `Bridge.IP` to the headset's IP.
 3. **Once:** put the headset on, start PicoFacialBridge, then run **Tongue Calibration**.

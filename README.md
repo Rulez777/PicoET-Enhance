@@ -20,6 +20,7 @@ Download two files from the [latest release](https://github.com/Rulez777/PicoET-
 | 3 | Headset, once | Put it on, open **PicoFacialBridge** and start it, then open **Tongue Calibration** → **Calibrate** (about a minute, it tells you what to do). |
 
 That is all: no ADB, no IP addresses to type, no firewall rules, nothing else to download.
+To remove it again: PC, `Uninstall.cmd` from the same zip (puts the previous DLL back); headset, Magisk app → Modules → PicoET-Enhance → Remove → Reboot.
 Avatars need `TongueLeft` / `TongueRight` (Unified Expressions).
 
 ### Which version does what

@@ -20,6 +20,7 @@
 | 3 | 头显（一次） | 戴上头显，打开并启动 **PicoFacialBridge**，然后打开 **Tongue Calibration** → **Calibrate**（约一分钟，每一步都有提示）。 |
 
 就这些：不需要 ADB，不需要填写 IP，不需要防火墙规则，也不需要再下载别的东西。
+卸载：PC 端运行同一 zip 中的 `Uninstall.cmd`（恢复之前的 DLL）；头显端在 Magisk App → 模块 → PicoET-Enhance → 移除 → 重启。
 模型需要 `TongueLeft` / `TongueRight` 参数（Unified Expressions）。
 
 ### 各功能需要的版本
