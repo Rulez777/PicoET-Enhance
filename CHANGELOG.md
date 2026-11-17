@@ -2,6 +2,19 @@
 
 English | [简体中文](CHANGELOG_zh.md)
 
+## [2.4.2-tongue.5] - 2026-11-17
+
+### Battery-saving update
+- Pause tongue frame copies and inference without an active subscriber. Continue accepting subscriptions and calibration commands.
+- Replace 10 ms worker polling with socket/frame event waits.
+- Use a 125 ms inference interval while the tongue is hidden and the mouth is still, rounded to the next camera frame. Motion or tongue presence restores the active rate.
+- Raise active tongue capture to up to 30 Hz. Actual throughput depends on camera cadence and inference time.
+- Keep calibration and retraining at the active rate. Preserve 40 ms smoothing using elapsed time.
+- Accelerate 400x400 downsampling with identical averaged pixels.
+- Fix UDP delivery after moving command reception out of inference.
+
+Battery savings have not been measured. The PC module remains 0.4.1-tongue.4.
+
 ## [2.4.2-tongue.4] - 2026-11-10 (fork Rulez777/PicoET-Enhance)
 
 ### Added

@@ -1,12 +1,12 @@
 # PicoET-Enhance
 
-<p align="center"><a href="docs/media/tongue-demo.mp4"><img src="docs/media/tongue-demo.gif" width="480" alt="Tongue tracking demo"></a><br><sub>PICO 4 Enterprise 舌头左右追踪，在头显上计算（v2.4.2-tongue.4）。点击图片查看原画质视频。</sub></p>
+<p align="center"><a href="docs/media/tongue-demo.mp4"><img src="docs/media/tongue-demo.gif" width="480" alt="Tongue tracking demo"></a><br><sub>PICO 4 Enterprise 舌头左右追踪，在头显上计算（v2.4.2-tongue.5）。点击图片查看原画质视频。</sub></p>
 
 [English](README.md) | 简体中文
 
 面向 PICO 4 Pro 的眼动增强 Magisk 模块：打开眼动服务的逐眼门控以输出真实瞳孔数据，解除面部表情模型的跨眼耦合让左右眼各自计算，把眼部与嘴部表情目标频率从原厂约 24 Hz 提高到默认 90/90 Hz，并（本分支）增加在头显上计算的**舌头左右追踪**。配合 [PicoFacialBridge](https://github.com/WolalaQAQ/PicoFacialBridge) 和 [UnifiedPicoModule](https://github.com/WolalaQAQ/UnifiedPicoModule) 使用。
 
-> v2.4.2-tongue.4（基于 v2.4.2 的分支）· PICO 4 Pro / PICO 4 Enterprise · 舌头支持任意固件，眼部/面部增强需要 PICO OS 5.13.7 · [更新日志](CHANGELOG_zh.md) · [舌头说明（英文）](TONGUE.md)
+> v2.4.2-tongue.5（基于 v2.4.2 的分支）· PICO 4 Pro / PICO 4 Enterprise · 舌头支持任意固件，眼部/面部增强需要 PICO OS 5.13.7 · [更新日志](CHANGELOG_zh.md) · [舌头说明（英文）](TONGUE.md)
 
 ## 三步安装（一体化）
 
@@ -15,7 +15,7 @@
 
 | 步骤 | 位置 | 操作 |
 |---|---|---|
-| 1 | 头显 | Magisk App → 模块 → 从本地安装 → `magisk-picoet-enhance-v2.4.2-tongue.4.zip` → 重启。这一个 zip 会装好模块、**Tongue Calibration** 校准应用和 **PicoFacialBridge v0.6.0**。 |
+| 1 | 头显 | Magisk App → 模块 → 从本地安装 → `magisk-picoet-enhance-v2.4.2-tongue.5.zip` → 重启。这一个 zip 会装好模块、**Tongue Calibration** 校准应用和 **PicoFacialBridge v0.6.0**。 |
 | 2 | PC | 解压 `UnifiedPicoModule-0.4.1-tongue.4.zip`，关闭 VRCFaceTracking，双击 `Install.cmd`，再启动 VRCFaceTracking。 |
 | 3 | 头显（一次） | 戴上头显，打开并启动 **PicoFacialBridge**，然后打开 **Tongue Calibration** → **Calibrate**（约一分钟，每一步都有提示）。 |
 
@@ -27,8 +27,8 @@
 不使用 Magisk App 时，第 1 步可用命令行完成：
 
 ```sh
-adb push magisk-picoet-enhance-v2.4.2-tongue.4.zip /data/local/tmp/
-adb shell su -c 'magisk --install-module /data/local/tmp/magisk-picoet-enhance-v2.4.2-tongue.4.zip'
+adb push magisk-picoet-enhance-v2.4.2-tongue.5.zip /data/local/tmp/
+adb shell su -c 'magisk --install-module /data/local/tmp/magisk-picoet-enhance-v2.4.2-tongue.5.zip'
 adb reboot
 ```
 
@@ -39,9 +39,9 @@ adb reboot
 
 | 功能 | 头显模块 | PicoFacialBridge | PC 模块 | VRCFaceTracking | 固件 |
 |---|---|---|---|---|---|
-| 舌头左右 | v2.4.2-tongue.4（本 zip） | v0.6.0（zip 内置；v0.5.0+ 可用） | `UnifiedPicoModule-0.4.1-tongue.4.zip` | 5.4.5 或 6.0.0.0（Steam） | 任意 |
-| 真实瞳孔直径 | v2.4.2-tongue.4 | v0.5.0+ | UnifiedPicoModule 0.4.0+（VRCFT 6 需 0.4.1+） | 5.4.5 或 6.0.0.0 | 任意（按符号名挂钩；在 5.13.7 上验证） |
-| 左右眼独立、眼部与嘴部 90 Hz 表情 | v2.4.2-tongue.4 | v0.5.0+ | UnifiedPicoModule 0.4.0+ | 5.4.5 或 6.0.0.0；OSC 接近 90 Hz 需要 [VRCFT-Enhance](https://github.com/WolalaQAQ/VRCFT-Enhance) | 仅 PICO OS 5.13.7 |
+| 舌头左右 | v2.4.2-tongue.5（本 zip） | v0.6.0（zip 内置；v0.5.0+ 可用） | `UnifiedPicoModule-0.4.1-tongue.4.zip` | 5.4.5 或 6.0.0.0（Steam） | 任意 |
+| 真实瞳孔直径 | v2.4.2-tongue.5 | v0.5.0+ | UnifiedPicoModule 0.4.0+（VRCFT 6 需 0.4.1+） | 5.4.5 或 6.0.0.0 | 任意（按符号名挂钩；在 5.13.7 上验证） |
+| 左右眼独立、眼部与嘴部 90 Hz 表情 | v2.4.2-tongue.5 | v0.5.0+ | UnifiedPicoModule 0.4.0+ | 5.4.5 或 6.0.0.0；OSC 接近 90 Hz 需要 [VRCFT-Enhance](https://github.com/WolalaQAQ/VRCFT-Enhance) | 仅 PICO OS 5.13.7 |
 | 普通面部与眼动追踪，不装模块 | 不需要 | v0.3+ | 任意 UnifiedPicoModule | 5.4.5 或 6.0.0.0 | 任意 |
 
 请配套使用同一 Release 的两个文件。tongue.3 的 PC DLL 仍能接收本头显模块的舌头数据，但仅限 VRCFaceTracking 5，且没有鼓腮保护。
@@ -211,7 +211,7 @@ pwsh -File build-picoet-enhance.ps1            # 打包成 Magisk zip
 
 ## 待做
 
-- [x] **舌头左右**（本分支 v2.4.2-tongue.4）：头显端分割模型，经 Wi-Fi 发送给 UnifiedPicoModule。见 [TONGUE.md](TONGUE.md)。
+- [x] **舌头左右**（本分支 v2.4.2-tongue.5）：头显端分割模型，经 Wi-Fi 发送给 UnifiedPicoModule。见 [TONGUE.md](TONGUE.md)。
 - [ ] **舌头上下**：现有数据下无法可靠区分（向下与直伸相似；两侧的上下与左右混淆）。需要学习型输出头和多次佩戴的录制数据（[详情](research/tongue-v2/README.md#updown-not-implemented)）。
 - [x] **适配其他用户**：随附的 Tongue Calibration 应用可按人校准方向、为上唇/胡须学习忽略区，并可在头显上重新训练模型（仅在验证更好时保留；“恢复标准”可撤销）。忽略区尚未在真实胡须上测试。
 - [ ] **面捕不滤波输出**：把端侧 FaceTrackor 的时间平滑做成可选关闭，让模块直接转发逐帧原始面部数据。时间滤波改由 PC 端按需处理，端侧只负责发原始值。

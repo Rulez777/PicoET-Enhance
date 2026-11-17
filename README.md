@@ -1,12 +1,12 @@
 # PicoET-Enhance
 
-<p align="center"><a href="docs/media/tongue-demo.mp4"><img src="docs/media/tongue-demo.gif" width="480" alt="Tongue tracking demo"></a><br><sub>Tongue left/right on PICO 4 Enterprise, tracked on the headset (v2.4.2-tongue.4). </sub></p>
+<p align="center"><a href="docs/media/tongue-demo.mp4"><img src="docs/media/tongue-demo.gif" width="480" alt="Tongue tracking demo"></a><br><sub>Tongue left/right on PICO 4 Enterprise, tracked on the headset (v2.4.2-tongue.5). </sub></p>
 
 English | [简体中文](README_zh.md)
 
 An eye-tracking enhancement Magisk module for the PICO 4 Pro: it opens the eye-tracking service's per-eye gate for real pupil data, decouples the facial expression model so each eye is processed on its own, targets 90 Hz for both eye and mouth expressions by default instead of the stock rate of about 24 Hz, and (this fork) adds **tongue left/right tracking** computed on the headset. Use it with [PicoFacialBridge](https://github.com/WolalaQAQ/PicoFacialBridge) and [UnifiedPicoModule](https://github.com/WolalaQAQ/UnifiedPicoModule).
 
-> v2.4.2-tongue.4 (fork of v2.4.2) · PICO 4 Pro / PICO 4 Enterprise · any firmware for the tongue, PICO OS 5.13.7 for the eye/face enhancement · [Changelog](CHANGELOG.md) · [Tongue details](TONGUE.md)
+> v2.4.2-tongue.5 (fork of v2.4.2) · PICO 4 Pro / PICO 4 Enterprise · any firmware for the tongue, PICO OS 5.13.7 for the eye/face enhancement · [Changelog](CHANGELOG.md) · [Tongue details](TONGUE.md)
 
 ## Install in 3 steps (all-in-one)
 
@@ -15,7 +15,7 @@ Download two files from the [latest release](https://github.com/Rulez777/PicoET-
 
 | Step | Where | What to do |
 |---|---|---|
-| 1 | Headset | Magisk app → Modules → Install from storage → `magisk-picoet-enhance-v2.4.2-tongue.4.zip` → Reboot. This one zip installs the module, the **Tongue Calibration** app and **PicoFacialBridge v0.6.0**. |
+| 1 | Headset | Magisk app → Modules → Install from storage → `magisk-picoet-enhance-v2.4.2-tongue.5.zip` → Reboot. This one zip installs the module, the **Tongue Calibration** app and **PicoFacialBridge v0.6.0**. |
 | 2 | PC | Unpack `UnifiedPicoModule-0.4.1-tongue.4.zip`, close VRCFaceTracking, double-click `Install.cmd`, start VRCFaceTracking. |
 | 3 | Headset, once | Put it on, open **PicoFacialBridge** and start it, then open **Tongue Calibration** → **Calibrate** (about a minute, it tells you what to do). |
 
@@ -27,8 +27,8 @@ Fresh installs enable enhanced mode (`dual/on`) at 90/90 Hz and the tongue after
 Without the Magisk app, step 1 from a command line:
 
 ```sh
-adb push magisk-picoet-enhance-v2.4.2-tongue.4.zip /data/local/tmp/
-adb shell su -c 'magisk --install-module /data/local/tmp/magisk-picoet-enhance-v2.4.2-tongue.4.zip'
+adb push magisk-picoet-enhance-v2.4.2-tongue.5.zip /data/local/tmp/
+adb shell su -c 'magisk --install-module /data/local/tmp/magisk-picoet-enhance-v2.4.2-tongue.5.zip'
 adb reboot
 ```
 
@@ -40,9 +40,9 @@ Avatars need `TongueLeft` / `TongueRight` (Unified Expressions).
 
 | You want | Headset module | PicoFacialBridge | PC module | VRCFaceTracking | Firmware |
 |---|---|---|---|---|---|
-| Tongue left/right | v2.4.2-tongue.4 (this zip) | v0.6.0 (inside the zip; v0.5.0+ works) | `UnifiedPicoModule-0.4.1-tongue.4.zip` | 5.4.5 or 6.0.0.0 (Steam) | any |
-| Real pupil size | v2.4.2-tongue.4 | v0.5.0+ | UnifiedPicoModule 0.4.0+ (0.4.1+ on VRCFT 6) | 5.4.5 or 6.0.0.0 | any (hooked by symbol name; verified on 5.13.7) |
-| Independent eyes, 90 Hz eye and mouth expressions | v2.4.2-tongue.4 | v0.5.0+ | UnifiedPicoModule 0.4.0+ | 5.4.5 or 6.0.0.0; OSC near 90 Hz needs [VRCFT-Enhance](https://github.com/WolalaQAQ/VRCFT-Enhance) | PICO OS 5.13.7 only |
+| Tongue left/right | v2.4.2-tongue.5 (this zip) | v0.6.0 (inside the zip; v0.5.0+ works) | `UnifiedPicoModule-0.4.1-tongue.4.zip` | 5.4.5 or 6.0.0.0 (Steam) | any |
+| Real pupil size | v2.4.2-tongue.5 | v0.5.0+ | UnifiedPicoModule 0.4.0+ (0.4.1+ on VRCFT 6) | 5.4.5 or 6.0.0.0 | any (hooked by symbol name; verified on 5.13.7) |
+| Independent eyes, 90 Hz eye and mouth expressions | v2.4.2-tongue.5 | v0.5.0+ | UnifiedPicoModule 0.4.0+ | 5.4.5 or 6.0.0.0; OSC near 90 Hz needs [VRCFT-Enhance](https://github.com/WolalaQAQ/VRCFT-Enhance) | PICO OS 5.13.7 only |
 | Plain face and eye tracking, no module | not needed | v0.3+ | any UnifiedPicoModule | 5.4.5 or 6.0.0.0 | any |
 
 Use the two files of one release together. The tongue.3 PC DLL still receives the tongue from this headset module, but only on VRCFaceTracking 5 and without the cheek-puff guard.
@@ -69,7 +69,7 @@ The PICO 4 Pro firmware tracks each eye, but its facial expression model mixes t
 - **Real pupil data**: it opens the per-eye gate inside the eye-tracking service, so real pupil diameter data is written to shared memory.
 - **Independent eyes**: it removes the expression model's cross-eye coupling. EyeLook, Blink, Wide and the brow channels are computed and filtered per eye, each with its own quality window, reference image and history. The filtered right inner brow and the per-eye quality states are exported as an `EPI1` extension, which PicoFacialBridge forwards as `X` packets.
 - **90/90 Hz eye and mouth by default**: the eye and mouth expression paths each run on every eligible fresh camera input, and the two inferences for a frame run in parallel. Lower rates are optional ([Eye and mouth rates](#eye-and-mouth-rates)). To carry the high rate all the way to VRChat, see [About 90 Hz OSC](#about-90-hz-osc).
-- **Tongue left/right** (this fork): PICO reports only `TongueOut`. A small segmentation model (MobileNetV3-small, C++ port) runs on the headset's big cores at about 20 Hz on the mouth camera image and outputs TongueLeft/TongueRight plus a TongueOut fallback; UnifiedPicoModule receives it over Wi-Fi (UDP 19031, no ADB). Eye/mouth expression rates are unaffected. The model is personal (trained on one face); see [TONGUE.md](TONGUE.md).
+- **Tongue left/right** (this fork): PICO reports only `TongueOut`. A small segmentation model (MobileNetV3-small, C++ port) runs on the headset's big cores at up to 30 Hz while active on the mouth camera image and outputs TongueLeft/TongueRight plus a TongueOut fallback; UnifiedPicoModule receives it over Wi-Fi (UDP 19031, no ADB). Eye/mouth expression rates are unaffected. The model is personal (trained on one face); see [TONGUE.md](TONGUE.md).
 
 Smoothing, mouth baseline adaptation and quality windows follow each source's own timestamps: a long gap pauses the quality window, and a repeated or backward source does not advance anything.
 
@@ -212,7 +212,7 @@ Pushing a `v<version>` tag makes GitHub Actions build on a Windows runner and pu
 
 ## TODO
 
-- [x] Tongue left/right (this fork, v2.4.2-tongue.4): on-headset segmentation model, Wi-Fi delivery to UnifiedPicoModule. See [TONGUE.md](TONGUE.md).
+- [x] Tongue left/right (this fork, v2.4.2-tongue.5): on-headset segmentation model, Wi-Fi delivery to UnifiedPicoModule. See [TONGUE.md](TONGUE.md).
 - [ ] Tongue up/down: not separable reliably from this camera with the data so far (down looks like straight out; on the sides up/down mixes with left/right). Needs a learned head and recordings from several head-mounts ([details](research/tongue-v2/README.md#updown-not-implemented)).
 - [x] Other faces: the bundled Tongue Calibration app calibrates the direction per person, learns an ignore zone for the upper lip / beard, and can retrain the model on the headset (kept only if it tests better; "Restore standard" undoes it). The ignore zone still needs testing on real beards.
 - [ ] Unfiltered face output: make the on-device FaceTrackor temporal smoothing optional so the module can forward per-frame raw face data. Filtering then moves to the PC side, where it can be tuned as needed.

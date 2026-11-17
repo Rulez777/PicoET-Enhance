@@ -16,7 +16,7 @@ You need a rooted (Magisk) PICO 4 Pro or PICO 4 Enterprise and a PC with VRCFace
 [latest release](https://github.com/Rulez777/PicoET-Enhance/releases/latest).
 
 1. **Headset:** Magisk app → Modules → Install from storage →
-   `magisk-picoet-enhance-v2.4.2-tongue.4.zip` → Reboot. This one file installs everything the
+   `magisk-picoet-enhance-v2.4.2-tongue.5.zip` → Reboot. This one file installs everything the
    headset needs: the module, the **Tongue Calibration** app and **PicoFacialBridge v0.6.0** (with
    its tracking permissions granted). An older Bridge is upgraded, a newer one is left alone.
 2. **PC:** unpack `UnifiedPicoModule-0.4.1-tongue.4.zip`, close VRCFaceTracking, double-click
@@ -97,7 +97,7 @@ the camera depends on how the headset sits.
 
 ```
 mouth camera (8-bit grey, 400x400 on PICO 4 Pro / Enterprise, inside pxreyetrackingservice)
-  -> payload copies a box-averaged 200x200 frame at <=20 Hz (tracking thread does nothing else)
+  -> payload copies a box-averaged 200x200 frame at <=30 Hz (tracking thread does nothing else)
   -> worker thread on the fastest cores, found from cpufreq (off the tracking service's little
      cores)
        MobileNetV3-small blocks 0..8 + small mask head, float32 C++ port, ~30 ms/frame
@@ -106,7 +106,7 @@ mouth camera (8-bit grey, 400x400 on PICO 4 Pro / Enterprise, inside pxreyetrack
                  tongue not level with / above the nose glare
        direction: angle of the tongue mask centroid around the nose glare centroid, mapped with
                   the per-user calibration (/data/local/tmp/tongue-calibration)
-       20 Hz output stage: on after 2 frames, off after 2, ~40 ms smoothing
+       up to 30 Hz output stage: on after 2 frames, off after 2, ~40 ms smoothing
   -> UDP 19031: the PC module sends "TSUB" once a second, the headset answers with 24-byte
      TNG2 packets (left, right, out, confidence) to that PC for 3 s
   -> 127.0.0.1 only: camera + mask stream and calibration/retraining commands for the app
@@ -156,3 +156,7 @@ are cheap to add on the PC side, and calibration's ignored zone handles what is 
 `shadow_model.py`, `train_shadow.py` / `train_shadow_v2.py`, `build_extra.py`,
 `export_headset_model.py`. The author's training frames are attached to the release as
 `tongue-training-data.zip`.
+
+## Battery-saving scheduling (tongue.5)
+
+Inference pauses without subscribers. With a connected PC, a still mouth and hidden tongue use a 125 ms inference interval rounded to the next camera frame. Motion or tongue presence restores up to 30 Hz. Calibration and retraining use the active rate. The worker sleeps on socket/frame events between tasks. Battery savings have not been measured.
